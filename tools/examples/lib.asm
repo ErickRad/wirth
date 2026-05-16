@@ -1,0 +1,5 @@
+.GLOBAL VALUE
+
+VALUE:
+    .WORD 21
+
