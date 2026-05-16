@@ -85,3 +85,7 @@
 3. Migrar entrada, GDT/TSS, IDT, PIC/APIC, paging e syscalls para o modo longo de 64 bits.
 4. Atualizar a imagem de boot para gerar ISO e pendrive live compatíveis com firmware moderno.
 5. Manter a imagem i386 apenas como fallback de laboratório enquanto a nova porta amadurece.
+
+### Estado do scaffold x86_64
+- O projeto já possui o namespace-base `kernel::arch::x86_64` para começar a migração.
+- O caminho atual continua 32-bit e funcional; o scaffold serve para mover serviços de arquitetura sem quebrar o bootstrap existente.

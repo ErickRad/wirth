@@ -5,8 +5,10 @@ Kernel minimal em C++ (freestanding), com boot via GRUB2/Multiboot2.
 ## Pré-requisitos
 - `gcc`, `g++`, `ld` (ou toolchain `i686-elf-*`)
 - `grub-mkimage` (pacote GRUB para i386-pc)
+- `grub-mkstandalone` e módulos `x86_64-efi` para o fluxo UEFI
 - `xorriso` (usado para montar a ISO final)
 - `qemu-system-i386`
+- `qemu-system-x86_64` e firmware OVMF para o boot UEFI
 
 ## Build
 ```bash
@@ -23,8 +25,20 @@ make iso
 make run
 ```
 
+## Executar em UEFI
+```bash
+make run-uefi
+```
+
+## Usar em pendrive
+```bash
+sudo dd if=build/kernigham.iso of=/dev/sdX bs=4M status=progress oflag=sync
+```
+Substitua `/dev/sdX` pelo dispositivo cru do pendrive.
+
 ## Estrutura
 - `boot/`: entrada em ASM, linker e configuração do GRUB
+- `boot/`: entrada em ASM, linker e configuração do GRUB BIOS/UEFI
 - `kernel/`: núcleo C++ (entrypoint, serial e base de interrupções x86)
 - `kernel/boot/`: parsing de estruturas de boot (Multiboot2)
 - `kernel/mm/`: PMM bitmap, VMM paginado e heap virtual do kernel
@@ -55,6 +69,7 @@ make run
 - Novas syscalls de processo/FS: `getpid`, `gettid`, `proc_count`, `mkdir`, `getuid`, `getgid`.
 - Loader ELF já executa `/bin/init.elf` em ring3 com `int 0x80`.
 - Geração de ISO (`make iso`) funcional no fluxo atual.
+- Geração de ISO híbrida BIOS/UEFI funcional, pronta para live USB.
 
 ## Dependências no Ubuntu/Debian
 ```bash

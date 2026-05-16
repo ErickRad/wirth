@@ -7,8 +7,11 @@ Este documento consolida o que já foi desenvolvido, como reproduzir o build/boo
 ### Pré-requisitos
 - `gcc`, `g++`, `ld` (ou toolchain cross `i686-elf-*`)
 - `grub-pc-bin` (fornece `grub-mkimage` e módulos `i386-pc`)
+- `grub-efi-amd64-bin` (fornece `grub-mkstandalone` e módulos `x86_64-efi`)
 - `xorriso`
 - `qemu-system-i386`
+- `qemu-system-x86_64`
+- firmware OVMF/UEFI (`/usr/share/OVMF/OVMF_CODE_4M.fd`)
 
 ### Build e boot
 ```bash
@@ -16,12 +19,19 @@ make clean
 make
 make iso
 make run
+make run-uefi
 ```
 
 ### Direção de próxima geração
 - A base atual continua BIOS+i386.
 - O próximo alvo deve ser UEFI+x86_64 para pendrive live em PCs modernos.
 - A meta é manter o fluxo atual enquanto a nova árvore de boot é introduzida em paralelo.
+- A separação inicial de arquitetura já existe em `kernel/arch/x86_64`, ainda como scaffold.
+
+### Boot live para pendrive
+- A ISO agora é híbrida e contém boot BIOS e UEFI.
+- Para testar em máquina virtual moderna, use `make run-uefi`.
+- Para gravar em pendrive, copie a ISO diretamente para o dispositivo cru com `dd`.
 
 ### Fluxo de ISO atual
 Em vez de `grub-mkrescue` (que depende de `mformat`), o projeto usa:
