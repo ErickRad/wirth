@@ -1,4 +1,4 @@
-# kernigham Kernel
+# wirth Kernel
 
 Kernel minimal em C++ (freestanding), com boot via GRUB2/Multiboot2.
 
@@ -30,11 +30,16 @@ make run
 make run-uefi
 ```
 
+## Gerar imagem para pendrive
+```bash
+make usb
+```
+
 ## Usar em pendrive
 ```bash
-sudo dd if=build/kernigham.iso of=/dev/sdX bs=4M status=progress oflag=sync
+sudo dd if=build/wirth-usb.img of=/dev/sdX bs=4M status=progress oflag=sync
 ```
-Substitua `/dev/sdX` pelo dispositivo cru do pendrive.
+Substitua `/dev/sdX` pelo dispositivo cru do pendrive. A ISO continua servindo para CD/OVMF; a imagem do pendrive inclui o EFI carregador e os kernels no mesmo FAT.
 
 ## Estrutura
 - `boot/`: entrada em ASM, linker e configuração do GRUB

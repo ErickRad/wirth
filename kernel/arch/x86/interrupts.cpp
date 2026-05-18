@@ -56,11 +56,10 @@ void load_idt(const IdtPtr& idt_ptr) {
 }  // namespace
 
 extern "C" void unhandled_interrupt_handler() {
-    // Get the interrupt number from the stack
     uint32_t esp;
     asm volatile("mov %%esp, %0" : "=r"(esp));
     
-    kernel::serial::write("[kernigham] unhandled interrupt (esp=");
+    kernel::serial::write("[wirth] unhandled interrupt (esp=");
     kernel::serial::write_hex(esp);
     kernel::serial::write(")\n");
     
@@ -70,7 +69,7 @@ extern "C" void unhandled_interrupt_handler() {
 }
 
 extern "C" void exception_handler(uint32_t vector, uint32_t error_code) {
-    kernel::serial::write("[kernigham] exception vec=0x");
+    kernel::serial::write("[wirth] exception vec=0x");
     kernel::serial::write_hex(vector);
     kernel::serial::write(" err=0x");
     kernel::serial::write_hex(error_code);
@@ -87,12 +86,13 @@ extern "C" void exception_handler(uint32_t vector, uint32_t error_code) {
 }
 
 extern "C" void breakpoint_handler() {
-    kernel::serial::write("[kernigham] breakpoint interrupt\n");
+    kernel::serial::write("[wirth] breakpoint interrupt\n");
 }
 
 extern "C" uint32_t irq0_handler(uint32_t current_esp) {
     g_ticks += 1;
     asm volatile("" ::: "memory");
+
     const uint32_t next_esp = kernel::task::scheduler::on_timer_interrupt(current_esp, g_ticks);
     kernel::arch::x86::pic::send_eoi(0);
     return next_esp;
@@ -104,9 +104,12 @@ void init() {
     for (int i = 0; i < kIdtEntries; ++i) {
         set_entry(i, reinterpret_cast<uintptr_t>(isr_unhandled_stub));
     }
+
     set_entry(kBreakpointVector, reinterpret_cast<uintptr_t>(isr_breakpoint_stub));
+
     set_entry(13, reinterpret_cast<uintptr_t>(isr_gp_stub));
     set_entry(14, reinterpret_cast<uintptr_t>(isr_pf_stub));
+
     set_entry(kIrq0Vector, reinterpret_cast<uintptr_t>(irq0_stub));
     set_entry(
         kSyscallVector,
@@ -115,6 +118,7 @@ void init() {
 
     g_idt_ptr.limit = static_cast<uint16_t>(sizeof(g_idt) - 1);
     g_idt_ptr.base = reinterpret_cast<uint32_t>(&g_idt[0]);
+    
     load_idt(g_idt_ptr);
 }
 

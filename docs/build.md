@@ -29,9 +29,10 @@ make run-uefi
 - A separação inicial de arquitetura já existe em `kernel/arch/x86_64`, ainda como scaffold.
 
 ### Boot live para pendrive
-- A ISO agora é híbrida e contém boot BIOS e UEFI.
-- Para testar em máquina virtual moderna, use `make run-uefi`.
-- Para gravar em pendrive, copie a ISO diretamente para o dispositivo cru com `dd`.
+- A ISO continua híbrida e serve para CD/OVMF.
+- Para testar o caminho de pendrive em VM, use `make run-usb`.
+- Para gravar em pendrive, copie a imagem `build/wirth-usb.img` diretamente para o dispositivo cru com `dd`.
+- A imagem de pendrive inclui `BOOTX64.EFI` e os kernels dentro do mesmo FAT, porque o boot UEFI de USB não enxerga o layout de CD/El Torito da ISO.
 
 ### Fluxo de ISO atual
 Em vez de `grub-mkrescue` (que depende de `mformat`), o projeto usa:
@@ -159,8 +160,8 @@ Sequência típica validada em QEMU:
 6. alocação em heap + teste de `new`
 7. GDT/TSS, IDT, PIT, breakpoint
 8. syscall write/sleep
-9. leitura do ramfs no boot (`[kernigham] ramfs read: Hello from ramfs!`)
-10. arquivo aninhado no ramfs (`[kernigham] ramfs nested read: Nested file OK`)
+9. leitura do ramfs no boot (`[wirth] ramfs read: Hello from ramfs!`)
+10. arquivo aninhado no ramfs (`[wirth] ramfs nested read: Nested file OK`)
 11. carga de `/bin/init.elf` e entrada em ring3 via loader (`sys_exit code=0x0000002A`)
 12. identidade root disponível por syscall (`uid=0`, `gid=0`) e leitura de arquivos de conta
 
@@ -229,7 +230,7 @@ Status:
 
 O boot agora inicia um shell interativo no serial (`qemu -serial stdio`) com prompt:
 
-`root@kernigham:/root#`
+`root@wirth:/root#`
 
 O parser do shell foi refatorado para tokenização com suporte a aspas (`"..."` e `'...'`) e despacho por tabela de comandos
 (sem cadeia grande de `if/else`).
@@ -262,12 +263,12 @@ e syscalls:
 
 ## 10. Empacotar em pendrive (próximo passo prático)
 
-Com o ISO gerado em `build/kernigham.iso`, grave em USB (Linux host):
+Com o ISO gerado em `build/wirth.iso`, grave em USB (Linux host):
 
 ```bash
 make iso
 lsblk
-sudo dd if=build/kernigham.iso of=/dev/sdX bs=4M status=progress conv=fsync
+sudo dd if=build/wirth.iso of=/dev/sdX bs=4M status=progress conv=fsync
 sync
 ```
 
@@ -307,11 +308,11 @@ Foi adicionada uma toolchain completa em C++, gerada por `make toolchain` como `
 
 2. **TwoPassAssembler (2 passagens)**  
    - Passo 1: tabela de símbolos e tamanhos.  
-   - Passo 2: geração de objeto (`kernigham-obj-v1`) com código, símbolos, globais/externos e relocações.
+   - Passo 2: geração de objeto (`wirth-obj-v1`) com código, símbolos, globais/externos e relocações.
 
 3. **TwoPassLinker (2 passagens)**  
    - Passo 1: layout de módulos e resolução global.  
-   - Passo 2: aplicação de relocações e geração de executável (`kernigham-exe-v1`).  
+   - Passo 2: aplicação de relocações e geração de executável (`wirth-exe-v1`).  
    - Modos:
      - `absolute`: ligação + relocação completa (ligador-relocador, endereço de carga conhecido).
      - `relocatable`: ligação com relocações pendentes para o carregador relocador.

@@ -53,54 +53,54 @@ extern "C" void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_ad
     constexpr uint32_t kExpectedMagic = 0x36D76289;
 
     kernel::serial::init();
-    kernel::serial::write("[kernigham] kernel boot\n");
-    kernel::serial::write("[kernigham] multiboot magic: 0x");
+    kernel::serial::write("[wirth] kernel boot\n");
+    kernel::serial::write("[wirth] multiboot magic: 0x");
     kernel::serial::write_hex(multiboot_magic);
     kernel::serial::write("\n");
-    kernel::serial::write("[kernigham] mbi addr: 0x");
+    kernel::serial::write("[wirth] mbi addr: 0x");
     kernel::serial::write_hex(multiboot_info_addr);
     kernel::serial::write("\n");
 
     if (multiboot_magic != kExpectedMagic) {
-        kernel::serial::write("[kernigham] invalid multiboot magic\n");
+        kernel::serial::write("[wirth] invalid multiboot magic\n");
     } else {
-        kernel::serial::write("[kernigham] bootstrap OK\n");
+        kernel::serial::write("[wirth] bootstrap OK\n");
     }
     kernel::boot::multiboot2::log_memory_map(multiboot_info_addr);
     kernel::mm::pmm::init(
         multiboot_info_addr,
         reinterpret_cast<uint32_t>(&__kernel_start),
         reinterpret_cast<uint32_t>(&__kernel_end));
-    kernel::serial::write("[kernigham] pmm total frames=0x");
+    kernel::serial::write("[wirth] pmm total frames=0x");
     kernel::serial::write_hex(kernel::mm::pmm::total_frames());
     kernel::serial::write(" free=0x");
     kernel::serial::write_hex(kernel::mm::pmm::free_frames());
     kernel::serial::write("\n");
     const uint32_t test_frame = kernel::mm::pmm::alloc_frame();
-    kernel::serial::write("[kernigham] pmm alloc test=0x");
+    kernel::serial::write("[wirth] pmm alloc test=0x");
     kernel::serial::write_hex(test_frame);
     kernel::serial::write("\n");
 
     kernel::mm::vmm::init();
     kernel::mm::vmm::enable_paging();
-    kernel::serial::write("[kernigham] paging enabled\n");
+    kernel::serial::write("[wirth] paging enabled\n");
 
     const uint32_t mapped_test_virt = 0xC0400000u;
     const uint32_t mapped_test_phys = kernel::mm::pmm::alloc_frame();
     if (mapped_test_phys != 0 &&
         kernel::mm::vmm::map_page(mapped_test_virt, mapped_test_phys, true, false)) {
-        kernel::serial::write("[kernigham] vmm map test virt=0x");
+        kernel::serial::write("[wirth] vmm map test virt=0x");
         kernel::serial::write_hex(mapped_test_virt);
         kernel::serial::write(" -> phys=0x");
         kernel::serial::write_hex(kernel::mm::vmm::virt_to_phys(mapped_test_virt));
         kernel::serial::write("\n");
     } else {
-        kernel::serial::write("[kernigham] vmm map test failed\n");
+        kernel::serial::write("[wirth] vmm map test failed\n");
     }
 
     kernel::mm::heap::init(0xD0000000u, 0xD1000000u);
     void* const heap_ptr = kernel::mm::heap::alloc(128, 16);
-    kernel::serial::write("[kernigham] heap alloc=0x");
+    kernel::serial::write("[wirth] heap alloc=0x");
     kernel::serial::write_hex(reinterpret_cast<uint32_t>(heap_ptr));
     kernel::serial::write(" mapped=0x");
     kernel::serial::write_hex(kernel::mm::heap::mapped_bytes());
@@ -108,7 +108,7 @@ extern "C" void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_ad
     kernel::serial::write_hex(kernel::mm::heap::used_bytes());
     kernel::serial::write("\n");
     BootMarker* const marker = new BootMarker{0x484F4B55u, 0x1u};
-    kernel::serial::write("[kernigham] cpp new marker=0x");
+    kernel::serial::write("[wirth] cpp new marker=0x");
     kernel::serial::write_hex(reinterpret_cast<uint32_t>(marker));
     kernel::serial::write("\n");
 
@@ -117,9 +117,9 @@ extern "C" void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_ad
     kernel::storage_init();
     kernel::fs::g_fs = &ramfs;
     if (kernel::fs::g_fs->init()) {
-        kernel::serial::write("[kernigham] ramfs ready\n");
+        kernel::serial::write("[wirth] ramfs ready\n");
     } else {
-        kernel::serial::write("[kernigham] ramfs init failed\n");
+        kernel::serial::write("[wirth] ramfs init failed\n");
     }
 
     // restore any packages persisted on disk into ramfs
@@ -127,43 +127,56 @@ extern "C" void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_ad
 
     kernel::arch::x86::gdt::init();
     uint32_t current_stack = 0;
+
     asm volatile("mov %%esp, %0" : "=r"(current_stack));
     kernel::arch::x86::gdt::set_kernel_stack(current_stack);
-    kernel::serial::write("[kernigham] gdt+tss loaded\n");
+    kernel::serial::write("[wirth] gdt+tss loaded\n");
     kernel::task::scheduler::init(current_stack);
-    kernel::serial::write("[kernigham] scheduler initialized\n");
+    kernel::serial::write("[wirth] scheduler initialized\n");
+
     const int process_a = kernel::task::scheduler::create_process_task("svc-a", worker_task_a, 16 * 1024);
     const int process_b = kernel::task::scheduler::create_process_task("svc-b", worker_task_b, 16 * 1024);
     const int process_c = kernel::task::scheduler::create_process_task("svc-c", worker_task_c, 16 * 1024);
-    kernel::serial::write("[kernigham] processes created: A=0x");
+
+    kernel::serial::write("[wirth] processes created: A=0x");
+
     kernel::serial::write_hex(static_cast<uint32_t>(process_a));
     kernel::serial::write(" B=0x");
+
     kernel::serial::write_hex(static_cast<uint32_t>(process_b));
     kernel::serial::write(" C=0x");
+
     kernel::serial::write_hex(static_cast<uint32_t>(process_c));
     kernel::serial::write("\n");
 
     kernel::arch::x86::interrupts::init();
-    kernel::serial::write("[kernigham] idt loaded\n");
+    kernel::serial::write("[wirth] idt loaded\n");
+
     kernel::arch::x86::pic::remap(0x20, 0x28);
     kernel::arch::x86::pic::clear_irq_mask(0);
+
     kernel::arch::x86::pit::init(100);
-    kernel::serial::write("[kernigham] pit configured (100hz)\n");
+    kernel::serial::write("[wirth] pit configured (100hz)\n");
+
     kernel::arch::x86::interrupts::enable();
-    kernel::serial::write("[kernigham] interrupts enabled\n");
-    kernel::serial::write("[kernigham] root uid=0x");
+    kernel::serial::write("[wirth] interrupts enabled\n");
+    kernel::serial::write("[wirth] root uid=0x");
+
     kernel::serial::write_hex(syscall0(kernel::syscall::kGetUid));
     kernel::serial::write(" gid=0x");
+
     kernel::serial::write_hex(syscall0(kernel::syscall::kGetGid));
     kernel::serial::write("\n");
 
     const char file_path[] = "/test.txt";
     char file_buf[64] = {};
     uint32_t file_fd = 0;
+
     asm volatile("int $0x80"
                  : "=a"(file_fd)
                  : "a"(kernel::syscall::kOpen), "b"(file_path), "c"(kernel::fs::kOpenRead)
                  : "memory");
+
     if (file_fd != 0xFFFFFFFFu) {
         uint32_t read_n = 0;
         asm volatile("int $0x80"
@@ -171,17 +184,22 @@ extern "C" void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_ad
                      : "a"(kernel::syscall::kRead), "b"(file_fd), "c"(file_buf),
                        "d"(sizeof(file_buf) - 1)
                      : "memory");
+
         if (read_n != 0xFFFFFFFFu && read_n < sizeof(file_buf)) {
             file_buf[read_n] = '\0';
-            kernel::serial::write("[kernigham] ramfs read: ");
+
+            kernel::serial::write("[wirth] ramfs read: ");
             kernel::serial::write(file_buf);
             kernel::serial::write("\n");
+
         } else {
-            kernel::serial::write("[kernigham] ramfs read failed\n");
+            kernel::serial::write("[wirth] ramfs read failed\n");
         }
+
         asm volatile("int $0x80" : : "a"(kernel::syscall::kClose), "b"(file_fd) : "memory");
+
     } else {
-        kernel::serial::write("[kernigham] ramfs open failed\n");
+        kernel::serial::write("[wirth] ramfs open failed\n");
     }
 
     const char passwd_path[] = "/etc/passwd";
@@ -200,7 +218,7 @@ extern "C" void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_ad
                      : "memory");
         if (passwd_n != 0xFFFFFFFFu && passwd_n < sizeof(passwd_buf)) {
             passwd_buf[passwd_n] = '\0';
-            kernel::serial::write("[kernigham] /etc/passwd: ");
+            kernel::serial::write("[wirth] /etc/passwd: ");
             kernel::serial::write(passwd_buf);
             kernel::serial::write("\n");
         }
@@ -209,13 +227,16 @@ extern "C" void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_ad
 
     const char dir_path[] = "/bin";
     asm volatile("int $0x80" : : "a"(kernel::syscall::kMkdir), "b"(dir_path) : "memory");
+
     const char nested_path[] = "/bin/note.txt";
     uint32_t nested_fd = 0;
+
     asm volatile("int $0x80"
                  : "=a"(nested_fd)
                  : "a"(kernel::syscall::kOpen), "b"(nested_path),
                    "c"(kernel::fs::kOpenWrite | kernel::fs::kOpenCreate | kernel::fs::kOpenTruncate)
                  : "memory");
+
     if (nested_fd != 0xFFFFFFFFu) {
         const char nested_data[] = "Nested file OK\n";
         asm volatile("int $0x80"
@@ -233,22 +254,26 @@ extern "C" void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_ad
     if (nested_fd != 0xFFFFFFFFu) {
         char nested_buf[64] = {};
         uint32_t nested_n = 0;
+
         asm volatile("int $0x80"
                      : "=a"(nested_n)
                      : "a"(kernel::syscall::kRead), "b"(nested_fd), "c"(nested_buf),
                        "d"(sizeof(nested_buf) - 1)
                      : "memory");
+
         if (nested_n != 0xFFFFFFFFu && nested_n < sizeof(nested_buf)) {
             nested_buf[nested_n] = '\0';
-            kernel::serial::write("[kernigham] ramfs nested read: ");
+            kernel::serial::write("[wirth] ramfs nested read: ");
+
             kernel::serial::write(nested_buf);
             kernel::serial::write("\n");
         }
         asm volatile("int $0x80" : : "a"(kernel::syscall::kClose), "b"(nested_fd) : "memory");
     }
 
-    kernel::serial::write("[kernigham] launching kernel shell (init)\n");
+    kernel::serial::write("[wirth] launching kernel shell (init)\n");
     kernel::shell::run();
+    
     while (true) {
         asm volatile("hlt");
     }

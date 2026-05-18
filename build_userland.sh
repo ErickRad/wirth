@@ -24,7 +24,7 @@ cat > kernel/loader/test_prog_data.hpp <<'EOF'
 
 #include <cstdint>
 
-namespace kernigham::loader {
+namespace wirth::loader {
 
 // Embedded test userland program (32-bit ELF)
 extern "C" const uint8_t g_test_prog_elf[];

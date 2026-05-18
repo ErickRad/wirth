@@ -2,7 +2,7 @@
 
 #include <stdint.h>
 
-namespace kernigham::loader {
+namespace wirth::loader {
 
 // ELF header 32-bit
 struct ELFHeader {

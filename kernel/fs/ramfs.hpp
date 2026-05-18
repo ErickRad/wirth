@@ -26,6 +26,7 @@ private:
 
 public:
     RamFs();
+    void reset();
     bool init() override;
     int open(const char* path, uint32_t flags) override;
     int read(int fd, void* buf, uint32_t count) override;

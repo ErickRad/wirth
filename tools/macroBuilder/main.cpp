@@ -740,7 +740,7 @@ static ObjectFile parse_object(const json::Value& root) {
     }
     const auto& obj = root.as_object();
     auto format_it = obj.find("format");
-    if (format_it == obj.end() || !format_it->second.is_string() || format_it->second.as_string() != "kernigham-obj-v1") {
+    if (format_it == obj.end() || !format_it->second.is_string() || format_it->second.as_string() != "wirth-obj-v1") {
         throw ToolError("arquivo de objeto inválido");
     }
 
@@ -929,7 +929,7 @@ public:
         }
 
         json::Value::object_t root;
-        root["format"] = json::Value("kernigham-obj-v1");
+        root["format"] = json::Value("wirth-obj-v1");
         root["module"] = json::Value(module_name);
         root["size"] = json::Value(static_cast<long long>(code.size()));
         json::Value::array_t code_arr;
@@ -1216,7 +1216,7 @@ public:
         }
 
         json::Value::object_t image;
-        image["format"] = json::Value("kernigham-exe-v1");
+        image["format"] = json::Value("wirth-exe-v1");
         image["mode"] = json::Value(mode);
         image["size"] = json::Value(static_cast<long long>(linked.size()));
         image["entry"] = json::Value(mode == "absolute" ? entry + load_address : entry);
@@ -1282,7 +1282,7 @@ public:
 
     Result run_file(const fs::path& exe_path, std::optional<long long> load_address = std::nullopt, long long max_steps = 200000) {
         auto data = json::parse_file(exe_path);
-        if (!data.is_object() || !data.contains("format") || data.at("format").as_string() != "kernigham-exe-v1") {
+        if (!data.is_object() || !data.contains("format") || data.at("format").as_string() != "wirth-exe-v1") {
             throw ToolError("executável inválido: " + exe_path.string());
         }
         return run_image(data.as_object(), load_address, max_steps);

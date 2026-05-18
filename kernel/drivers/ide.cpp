@@ -47,26 +47,31 @@ bool ide_present() {
     // Try IDENTIFY
     io::outb(ATA_DRIVE, 0xA0); // master
     ata_delay();
+
     io::outb(ATA_SECTOR_COUNT, 0);
     io::outb(ATA_LBA_LOW, 0);
     io::outb(ATA_LBA_MID, 0);
     io::outb(ATA_LBA_HIGH, 0);
     io::outb(ATA_COMMAND, 0xEC);
+
     ata_delay();
 
     uint8_t st = ata_status();
     if (st == 0) return false;
+
     // wait for BSY clear
     while (st & 0x80) st = ata_status();
 
     // If ERR set, no identify
     if (st & 0x01) return false;
+
     return true;
 }
 
 bool ide_read_sectors(uint32_t lba, uint8_t* buf, uint32_t count) {
     for (uint32_t s = 0; s < count; ++s) {
         uint32_t cur = lba + s;
+
         io::outb(ATA_DRIVE, 0xE0 | ((cur >> 24) & 0x0F));
         io::outb(ATA_SECTOR_COUNT, 1);
         io::outb(ATA_LBA_LOW, (uint8_t)(cur & 0xFF));
@@ -77,6 +82,7 @@ bool ide_read_sectors(uint32_t lba, uint8_t* buf, uint32_t count) {
         // wait for BSY clear
         uint8_t st = ata_status();
         while (st & 0x80) st = ata_status();
+
         // wait for DRQ
         while (!(st & 0x08)) st = ata_status();
 
@@ -93,16 +99,21 @@ bool ide_read_sectors(uint32_t lba, uint8_t* buf, uint32_t count) {
 bool ide_write_sectors(uint32_t lba, const uint8_t* buf, uint32_t count) {
     for (uint32_t s = 0; s < count; ++s) {
         uint32_t cur = lba + s;
+
         io::outb(ATA_DRIVE, 0xE0 | ((cur >> 24) & 0x0F));
+
         io::outb(ATA_SECTOR_COUNT, 1);
         io::outb(ATA_LBA_LOW, (uint8_t)(cur & 0xFF));
+
         io::outb(ATA_LBA_MID, (uint8_t)((cur >> 8) & 0xFF));
         io::outb(ATA_LBA_HIGH, (uint8_t)((cur >> 16) & 0xFF));
+
         io::outb(ATA_COMMAND, 0x30); // WRITE SECTORS
 
         // wait for BSY clear
         uint8_t st = ata_status();
         while (st & 0x80) st = ata_status();
+        
         // wait for DRQ
         while (!(st & 0x08)) st = ata_status();
 

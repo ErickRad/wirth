@@ -5,11 +5,11 @@
 namespace kernel::arch::x86_64::gdt {
 
 void init() {
-    kernel::serial::write("[kernigham/x86_64] gdt scaffold init\n");
+    kernel::serial::write("[wirth/x86_64] gdt scaffold init\n");
 }
 
 void set_kernel_stack(uint64_t stack_top) {
-    kernel::serial::write("[kernigham/x86_64] set_kernel_stack=0x");
+    kernel::serial::write("[wirth/x86_64] set_kernel_stack=0x");
     kernel::serial::write_hex64(stack_top);
     kernel::serial::write("\n");
 }

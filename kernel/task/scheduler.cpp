@@ -27,23 +27,29 @@ struct Task {
     uint32_t tid;
     uint32_t pid;
     uint32_t* saved_esp;
+
     void (*entry)();
+
     uint32_t wake_tick;
     uint32_t ring;               // 0 = kernel, 3 = user
     uint32_t user_entry;         // ring3: entry point
     uint32_t user_esp0;          // ring3: user stack pointer
     uint32_t kernel_stack_top;   // ring3: kernel stack top used by TSS.esp0
+
     bool user_started;           // true after first iret to ring3
 };
 
 struct Process {
     bool used;
+
     uint32_t pid;
     uint32_t parent_pid;
     uint32_t uid;
     uint32_t gid;
+
     char home[32];
     char name[24];
+
     uint32_t live_threads;
     kernel::mm::vmm::AddressSpace address_space;
 };
@@ -58,13 +64,16 @@ uint32_t g_thread_count = 0;
 
 void copy_text(char* dst, const char* src, uint32_t max_size) {
     uint32_t i = 0;
+
     if (src == nullptr || max_size == 0) {
         return;
     }
+
     while (i + 1 < max_size && src[i] != '\0') {
         dst[i] = src[i];
         ++i;
     }
+
     dst[i] = '\0';
 }
 
@@ -96,49 +105,65 @@ void clear_process(Process& process) {
 
 Process* find_process(uint32_t pid) {
     for (uint32_t i = 0; i < kMaxProcesses; ++i) {
+
         if (g_processes[i].used && g_processes[i].pid == pid) {
             return &g_processes[i];
         }
     }
+
     return nullptr;
 }
 
 uint32_t create_process(const char* name, uint32_t parent_pid) {
     for (uint32_t i = 0; i < kMaxProcesses; ++i) {
+
         if (g_processes[i].used) {
             continue;
         }
+
         Process& process = g_processes[i];
+
         process.used = true;
         process.pid = g_next_pid++;
         process.parent_pid = parent_pid;
         process.live_threads = 0;
+
         if (g_process_count == 0 && parent_pid == 0) {
             process.uid = 0;
             process.gid = 0;
+
             copy_text(process.home, "/root", sizeof(process.home));
+
         } else {
             Process* const parent = find_process(parent_pid);
+
             process.uid = (parent == nullptr) ? 0 : parent->uid;
             process.gid = (parent == nullptr) ? 0 : parent->gid;
+
             copy_text(
                 process.home,
                 (parent == nullptr || parent->home[0] == '\0') ? "/root" : parent->home,
                 sizeof(process.home));
         }
+
         if (g_process_count == 0 && parent_pid == 0) {
             process.address_space = kernel::mm::vmm::kernel_address_space();
+
         } else {
             process.address_space = kernel::mm::vmm::create_kernel_clone_address_space();
+
             if (process.address_space == nullptr) {
                 clear_process(process);
                 return 0;
             }
         }
+
         copy_text(process.name, (name == nullptr) ? "process" : name, sizeof(process.name));
         ++g_process_count;
+
         return process.pid;
     }
+
     return 0;
 }
 
@@ -163,31 +188,39 @@ void setup_initial_task_stack(Task& task, uint32_t stack_base, uint32_t stack_si
 
 int alloc_task_slot() {
     for (uint32_t i = 0; i < kMaxTasks; ++i) {
+
         if (g_tasks[i].state == TaskState::kUnused || g_tasks[i].state == TaskState::kExited) {
             return static_cast<int>(i);
         }
     }
+
     return -1;
 }
 
 int create_task_for_process(uint32_t pid, kernel::task::scheduler::TaskEntry entry, uint32_t stack_size) {
+
     if (entry == nullptr) {
         return -1;
     }
+
     Process* process = find_process(pid);
+
     if (process == nullptr) {
         return -1;
     }
 
     const int slot_index = alloc_task_slot();
+
     if (slot_index < 0) {
         return -1;
     }
+
     Task& slot = g_tasks[slot_index];
     clear_task(slot);
 
     const uint32_t stack_bytes = (stack_size < 4096u) ? 4096u : stack_size;
     void* const stack_mem = kernel::mm::heap::alloc(stack_bytes, 16);
+
     if (stack_mem == nullptr) {
         clear_task(slot);
         return -1;
@@ -198,16 +231,19 @@ int create_task_for_process(uint32_t pid, kernel::task::scheduler::TaskEntry ent
     slot.pid = pid;
     slot.entry = entry;
     slot.wake_tick = kNoWakeTick;
+
     setup_initial_task_stack(slot, reinterpret_cast<uint32_t>(stack_mem), stack_bytes);
 
     ++process->live_threads;
     ++g_thread_count;
+
     return static_cast<int>(slot.tid);
 }
 
 void wake_sleeping_tasks(uint32_t now_tick) {
     for (uint32_t i = 0; i < kMaxTasks; ++i) {
         Task& task = g_tasks[i];
+
         if (task.state == TaskState::kSleeping && now_tick >= task.wake_tick) {
             task.state = TaskState::kRunnable;
             task.wake_tick = kNoWakeTick;
@@ -218,35 +254,45 @@ void wake_sleeping_tasks(uint32_t now_tick) {
 uint32_t pick_next_runnable(uint32_t current_index) {
     for (uint32_t offset = 1; offset <= kMaxTasks; ++offset) {
         const uint32_t candidate = (current_index + offset) % kMaxTasks;
+
         if (g_tasks[candidate].state == TaskState::kRunnable) {
             return candidate;
         }
     }
+
     return current_index;
 }
 
 Task* current_task_ptr() {
+
     if (g_current_task >= kMaxTasks) {
         return nullptr;
     }
+
     if (g_tasks[g_current_task].state == TaskState::kUnused) {
         return nullptr;
     }
+
     return &g_tasks[g_current_task];
 }
 
 void mark_current_exited() {
     Task* task = current_task_ptr();
+
     if (task == nullptr || task->state == TaskState::kExited) {
         return;
     }
+
     Process* process = find_process(task->pid);
+
     if (process != nullptr && process->live_threads > 0) {
         --process->live_threads;
     }
+
     if (g_thread_count > 0) {
         --g_thread_count;
     }
+
     task->state = TaskState::kExited;
     task->wake_tick = kNoWakeTick;
 }
@@ -292,6 +338,7 @@ void init(uint32_t kernel_stack_esp) {
     for (uint32_t i = 0; i < kMaxTasks; ++i) {
         clear_task(g_tasks[i]);
     }
+
     for (uint32_t i = 0; i < kMaxProcesses; ++i) {
         clear_process(g_processes[i]);
     }
@@ -303,19 +350,24 @@ void init(uint32_t kernel_stack_esp) {
     g_thread_count = 0;
 
     const uint32_t kernel_pid = create_process("kernel", 0);
+
     if (kernel_pid == 0) {
         return;
     }
+
     Process* kernel_process = find_process(kernel_pid);
+
     g_tasks[0].state = TaskState::kRunnable;
     g_tasks[0].tid = g_next_tid++;
     g_tasks[0].pid = kernel_pid;
     g_tasks[0].saved_esp = reinterpret_cast<uint32_t*>(kernel_stack_esp);
     g_tasks[0].entry = nullptr;
     g_tasks[0].wake_tick = kNoWakeTick;
+
     if (kernel_process != nullptr) {
         kernel_process->live_threads = 1;
     }
+
     g_thread_count = 1;
 }
 
@@ -325,39 +377,50 @@ int create_kernel_task(TaskEntry entry, uint32_t stack_size) {
 
 int create_process_task(const char* process_name, TaskEntry entry, uint32_t stack_size) {
     const uint32_t pid = create_process(process_name, current_process_id());
+
     if (pid == 0) {
         return -1;
     }
+
     if (create_task_for_process(pid, entry, stack_size) < 0) {
         Process* process = find_process(pid);
+
         if (process != nullptr) {
             clear_process(*process);
+
             if (g_process_count > 0) {
                 --g_process_count;
             }
         }
+
         return -1;
     }
+
     return static_cast<int>(pid);
 }
 
 int create_ring3_task(const char* process_name, uint32_t entry_point, uint32_t user_esp0) {
     const uint32_t pid = create_process(process_name, current_process_id());
+
     if (pid == 0) {
         return -1;
     }
 
     Process* process = find_process(pid);
+
     if (process == nullptr) {
         return -1;
     }
 
     const int slot_index = alloc_task_slot();
+
     if (slot_index < 0) {
         clear_process(*process);
+
         if (g_process_count > 0) {
             --g_process_count;
         }
+
         return -1;
     }
 
@@ -367,12 +430,15 @@ int create_ring3_task(const char* process_name, uint32_t entry_point, uint32_t u
     // Setup ring3 task (kernel stack still needed for syscalls/interrupts)
     const uint32_t stack_bytes = 4096;
     void* const stack_mem = kernel::mm::heap::alloc(stack_bytes, 16);
+
     if (stack_mem == nullptr) {
         clear_task(slot);
         clear_process(*process);
+
         if (g_process_count > 0) {
             --g_process_count;
         }
+
         return -1;
     }
 
@@ -387,16 +453,19 @@ int create_ring3_task(const char* process_name, uint32_t entry_point, uint32_t u
 
     // For ring3, saved_esp points to kernel stack (will be prepared by scheduler)
     uint32_t* sp = reinterpret_cast<uint32_t*>(reinterpret_cast<uint32_t>(stack_mem) + stack_bytes);
+
     slot.saved_esp = sp;
     slot.kernel_stack_top = reinterpret_cast<uint32_t>(sp);
 
     ++process->live_threads;
     ++g_thread_count;
+
     return static_cast<int>(pid);
 }
 
 uint32_t on_timer_interrupt(uint32_t current_esp, uint32_t tick_count) {
     Task* current = current_task_ptr();
+
     if (current == nullptr) {
         return current_esp;
     }
@@ -410,13 +479,17 @@ uint32_t on_timer_interrupt(uint32_t current_esp, uint32_t tick_count) {
 
     const uint32_t next = pick_next_runnable(g_current_task);
     const uint32_t prev = g_current_task;
+
     g_current_task = next;
+
     if (g_tasks[prev].pid != g_tasks[g_current_task].pid) {
         Process* const next_process = find_process(g_tasks[g_current_task].pid);
+
         if (next_process != nullptr && next_process->address_space != nullptr) {
             kernel::mm::vmm::switch_address_space(next_process->address_space);
         }
     }
+
     if (g_tasks[g_current_task].saved_esp == nullptr) {
         return current_esp;
     }
@@ -433,11 +506,13 @@ uint32_t on_timer_interrupt(uint32_t current_esp, uint32_t tick_count) {
         // Subsequent preemptions resume from the saved interrupt frame.
         if (!next_task.user_started) {
             next_task.user_started = true;
+
             uint32_t* frame = prepare_ring3_iret_frame(
                 next_task.saved_esp,
                 next_task.user_entry,
                 next_task.user_esp0
             );
+
             return reinterpret_cast<uint32_t>(frame);
         }
     }
@@ -480,31 +555,41 @@ uint32_t process_count() {
 
 uint32_t current_user_id() {
     const Task* current = current_task_ptr();
+
     if (current == nullptr) {
         return 0;
     }
+
     const Process* process = find_process(current->pid);
+
     return (process == nullptr) ? 0 : process->uid;
 }
 
 uint32_t current_group_id() {
     const Task* current = current_task_ptr();
+
     if (current == nullptr) {
         return 0;
     }
+
     const Process* process = find_process(current->pid);
+
     return (process == nullptr) ? 0 : process->gid;
 }
 
 const char* current_home() {
     const Task* current = current_task_ptr();
+
     if (current == nullptr) {
         return "/root";
     }
+
     const Process* process = find_process(current->pid);
+
     if (process == nullptr || process->home[0] == '\0') {
         return "/root";
     }
+
     return process->home;
 }
 
@@ -520,19 +605,24 @@ void sleep_current(uint32_t ticks, uint32_t now_tick) {
     if (ticks == 0) {
         return;
     }
+
     Task* current = current_task_ptr();
+
     if (current == nullptr) {
         return;
     }
+
     current->state = TaskState::kSleeping;
     current->wake_tick = now_tick + ticks;
 }
 
 bool is_current_sleeping(uint32_t now_tick) {
     Task* current = current_task_ptr();
+
     if (current == nullptr || current->state != TaskState::kSleeping) {
         return false;
     }
+
     return now_tick < current->wake_tick;
 }
 
@@ -543,6 +633,7 @@ extern "C" void task_entry_trampoline() {
     const uint32_t current_tid = current_task_id();
 
     for (uint32_t i = 0; i < kMaxTasks; ++i) {
+
         if (g_tasks[i].tid == current_tid && g_tasks[i].entry != nullptr) {
             g_tasks[i].entry();
             mark_current_exited();
