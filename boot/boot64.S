@@ -71,6 +71,7 @@ halt64:
 
 .section .data
 .align 4096
+.global pml4
 pml4:
     .quad pdpt + 0x03
     .fill 511, 8, 0

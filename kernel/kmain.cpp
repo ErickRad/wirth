@@ -16,6 +16,8 @@
 #include "task/scheduler.hpp"
 #include "serial.hpp"
 #include "shell.hpp"
+#include "xhci.hpp"
+#include "usb_mass_storage.hpp"
 
 extern "C" uint8_t __kernel_start;
 extern "C" uint8_t __kernel_end;
@@ -124,6 +126,18 @@ extern "C" void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_ad
 
     // restore any packages persisted on disk into ramfs
     kernel::storage_restore_packages();
+
+    kernel::serial::write("[wirth/x86] xhci probe\n");
+    const bool xhci_ready = kernel::xhci::init();
+    kernel::serial::write(xhci_ready ? "[wirth/x86] xhci ready\n" : "[wirth/x86] xhci unavailable\n");
+
+    if (xhci_ready) {
+        kernel::xhci::start_poll_task();
+    }
+
+    kernel::serial::write("[wirth/x86] usbms probe\n");
+    const bool usbms_ready = kernel::usbms::init();
+    kernel::serial::write(usbms_ready ? "[wirth/x86] usbms ready\n" : "[wirth/x86] usbms unavailable\n");
 
     kernel::arch::x86::gdt::init();
     uint32_t current_stack = 0;

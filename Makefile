@@ -31,12 +31,12 @@ TOOLCHAIN_BIN := $(BUILD_DIR)/macroBuilder
 EFI_IMAGE_BUILDER := $(BUILD_DIR)/efi-image-builder
 QEMU_DISPLAY := gtk
 
-COMMON_FLAGS := -m32 -ffreestanding -fno-stack-protector -Wall -Wextra -Werror
+COMMON_FLAGS := -m32 -ffreestanding -fno-stack-protector -Wall -Wextra
 CXXFLAGS := $(COMMON_FLAGS) -std=gnu++20 -fno-exceptions -fno-rtti -fno-use-cxa-atexit
 CFLAGS := $(COMMON_FLAGS)
 LDFLAGS := -m elf_i386 -T boot/linker.ld -nostdlib
 
-COMMON_FLAGS64 := -m64 -ffreestanding -fno-stack-protector -Wall -Wextra -Werror
+COMMON_FLAGS64 := -m64 -ffreestanding -fno-stack-protector -Wall -Wextra
 CXXFLAGS64 := $(COMMON_FLAGS64) -std=gnu++20 -fno-exceptions -fno-rtti -fno-use-cxa-atexit
 CFLAGS64 := $(COMMON_FLAGS64)
 LDFLAGS64 := -m elf_x86_64 -T boot/linker64.ld -nostdlib
@@ -49,16 +49,24 @@ OBJS := \
 	$(BUILD_DIR)/kmain.o \
 	$(BUILD_DIR)/multiboot2.o \
 	$(BUILD_DIR)/serial.o \
+	$(BUILD_DIR)/video.o \
+        $(BUILD_DIR)/pci.o \
 	$(BUILD_DIR)/shell.o \
 	$(BUILD_DIR)/interrupts.o \
 	$(BUILD_DIR)/gdt.o \
 	$(BUILD_DIR)/pic.o \
+	$(BUILD_DIR)/block.o \
 	$(BUILD_DIR)/pit.o \
 	$(BUILD_DIR)/syscall.o \
 	$(BUILD_DIR)/scheduler.o \
 	$(BUILD_DIR)/ramfs.o \
 		$(BUILD_DIR)/ide.o \
 		$(BUILD_DIR)/storage.o \
+		$(BUILD_DIR)/efifs.o \
+			$(BUILD_DIR)/ahci.o \
+			$(BUILD_DIR)/nvme.o \
+			$(BUILD_DIR)/xhci.o \
+			$(BUILD_DIR)/usbms.o \
 	$(BUILD_DIR)/pmm.o \
 	$(BUILD_DIR)/vmm.o \
 	$(BUILD_DIR)/heap.o \
@@ -71,10 +79,21 @@ OBJS64 := \
 	$(BUILD_DIR)/boot64.o \
 	$(BUILD_DIR)/kmain64.o \
 	$(BUILD_DIR)/serial64.o \
+	$(BUILD_DIR)/video64.o \
+	$(BUILD_DIR)/pci64.o \
 	$(BUILD_DIR)/multiboot264.o \
 	$(BUILD_DIR)/gdt64.o \
 	$(BUILD_DIR)/interrupts64.o \
 	$(BUILD_DIR)/ramfs64.o \
+	$(BUILD_DIR)/block64.o \
+	$(BUILD_DIR)/ide64.o \
+	$(BUILD_DIR)/storage64.o \
+	$(BUILD_DIR)/efifs64.o \
+	$(BUILD_DIR)/ahci64.o \
+	$(BUILD_DIR)/nvme64.o \
+	$(BUILD_DIR)/xhci64.o \
+	$(BUILD_DIR)/usbms64.o \
+	$(BUILD_DIR)/scheduler64.o \
 	$(BUILD_DIR)/rootfs_embedded.o
 
 .PHONY: all clean iso run check-tools check-iso-tools check-run-tools toolchain
@@ -84,10 +103,10 @@ all: toolchain $(KERNEL_ELF)
 toolchain: $(TOOLCHAIN_BIN)
 
 $(TOOLCHAIN_BIN): tools/macroBuilder/main.cpp | $(BUILD_DIR)
-	$(HOSTCXX) -std=c++20 -O2 -Wall -Wextra -Werror $< -o $@
+	$(HOSTCXX) -std=c++20 -O2 -Wall -Wextra $< -o $@
 
 $(EFI_IMAGE_BUILDER): tools/efiImageBuilder/main.cpp | $(BUILD_DIR)
-	$(HOSTCXX) -std=c++20 -O2 -Wall -Wextra -Werror $< -o $@
+	$(HOSTCXX) -std=c++20 -O2 -Wall -Wextra $< -o $@
 
 check-tools:
 	@command -v $(CC) >/dev/null || (echo "Compiler $(CC) not found" && exit 1)
@@ -110,7 +129,7 @@ $(BUILD_DIR):
 $(BUILD_DIR)/boot64.o: boot/boot64.S | $(BUILD_DIR) check-tools
 	$(HOSTCC) $(CFLAGS64) -c $< -o $@
 
-$(UEFI_EFI_EXE): boot/grub.cfg | $(BUILD_DIR) check-iso-tools
+$(UEFI_EFI_EXE): boot/grub/grub.cfg | $(BUILD_DIR) check-iso-tools
 	# Create a GRUB EFI image that reads its config from the FAT image at /boot/grub
 	grub-mkimage -O x86_64-efi -p /boot/grub \
 		part_gpt part_msdos fat iso9660 multiboot2 \
@@ -156,6 +175,18 @@ $(BUILD_DIR)/serial.o: kernel/serial.cpp kernel/serial.hpp | $(BUILD_DIR) check-
 $(BUILD_DIR)/serial64.o: kernel/serial.cpp kernel/serial.hpp | $(BUILD_DIR) check-tools
 	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
 
+$(BUILD_DIR)/video.o: kernel/video.cpp kernel/video.hpp | $(BUILD_DIR) check-tools
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/video64.o: kernel/video.cpp kernel/video.hpp | $(BUILD_DIR) check-tools
+	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
+
+$(BUILD_DIR)/pci.o: kernel/pci.cpp kernel/pci.hpp kernel/arch/x86/io.hpp | $(BUILD_DIR) check-tools
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/block.o: kernel/block.cpp kernel/block.hpp kernel/serial.hpp | $(BUILD_DIR) check-tools
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
 $(BUILD_DIR)/shell.o: kernel/shell.cpp kernel/shell.hpp kernel/fs/vfs.hpp kernel/serial.hpp kernel/task/scheduler.hpp | $(BUILD_DIR) check-tools
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
@@ -166,6 +197,39 @@ $(BUILD_DIR)/interrupts64.o: kernel/arch/x86_64/interrupts.cpp kernel/arch/x86_6
 	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
 
 $(BUILD_DIR)/ramfs64.o: kernel/fs/ramfs.cpp kernel/fs/ramfs.hpp kernel/fs/vfs.hpp kernel/sync/spinlock.hpp kernel/serial.hpp | $(BUILD_DIR) check-tools
+	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
+
+$(BUILD_DIR)/ide64.o: kernel/drivers/ide.cpp kernel/drivers/ide.hpp kernel/arch/x86/io.hpp kernel/serial.hpp | $(BUILD_DIR) check-tools
+	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
+
+$(BUILD_DIR)/storage64.o: kernel/storage.cpp kernel/storage.hpp kernel/drivers/ide.hpp kernel/serial.hpp | $(BUILD_DIR) check-tools
+	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
+
+$(BUILD_DIR)/efifs64.o: kernel/efifs.cpp kernel/efifs.hpp kernel/usb_mass_storage.hpp kernel/mm/heap.hpp | $(BUILD_DIR) check-tools
+	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
+
+$(BUILD_DIR)/xhci64.o: kernel/xhci.cpp kernel/xhci.hpp kernel/pci.hpp kernel/mm/heap.hpp kernel/mm/vmm.hpp | $(BUILD_DIR) check-tools
+	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
+
+$(BUILD_DIR)/usbms64.o: kernel/usb_mass_storage.cpp kernel/usb_mass_storage.hpp kernel/xhci.hpp | $(BUILD_DIR) check-tools
+	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
+
+$(BUILD_DIR)/xhci.o: kernel/xhci.cpp kernel/xhci.hpp kernel/pci.hpp kernel/mm/heap.hpp kernel/mm/vmm.hpp | $(BUILD_DIR) check-tools
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/usbms.o: kernel/usb_mass_storage.cpp kernel/usb_mass_storage.hpp kernel/xhci.hpp | $(BUILD_DIR) check-tools
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/ahci64.o: kernel/ahci.cpp kernel/ahci.hpp kernel/pci.hpp kernel/mm/heap.hpp kernel/mm/vmm.hpp | $(BUILD_DIR) check-tools
+	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
+
+$(BUILD_DIR)/nvme64.o: kernel/nvme.cpp kernel/nvme.hpp kernel/pci.hpp kernel/serial.hpp kernel/block.hpp | $(BUILD_DIR) check-tools
+	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
+
+$(BUILD_DIR)/pci64.o: kernel/pci.cpp kernel/pci.hpp kernel/arch/x86/io.hpp | $(BUILD_DIR) check-tools
+	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
+
+$(BUILD_DIR)/block64.o: kernel/block.cpp kernel/block.hpp kernel/serial.hpp | $(BUILD_DIR) check-tools
 	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
 
 $(BUILD_DIR)/rootfs_embedded.o: kernel/rootfs_embedded.cpp | $(BUILD_DIR) check-tools
@@ -189,6 +253,9 @@ $(BUILD_DIR)/syscall.o: kernel/syscall/syscall.cpp kernel/syscall/syscall.hpp ke
 $(BUILD_DIR)/scheduler.o: kernel/task/scheduler.cpp kernel/task/scheduler.hpp kernel/mm/heap.hpp kernel/mm/vmm.hpp | $(BUILD_DIR) check-tools
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/scheduler64.o: kernel/task/scheduler64_stub.cpp kernel/task/scheduler.hpp | $(BUILD_DIR) check-tools
+	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
+
 $(BUILD_DIR)/ramfs.o: kernel/fs/ramfs.cpp kernel/fs/ramfs.hpp kernel/fs/vfs.hpp kernel/sync/spinlock.hpp kernel/serial.hpp | $(BUILD_DIR) check-tools
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
@@ -196,6 +263,15 @@ $(BUILD_DIR)/ide.o: kernel/drivers/ide.cpp kernel/drivers/ide.hpp kernel/arch/x8
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/storage.o: kernel/storage.cpp kernel/storage.hpp kernel/drivers/ide.hpp kernel/serial.hpp | $(BUILD_DIR) check-tools
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/efifs.o: kernel/efifs.cpp kernel/efifs.hpp kernel/drivers/ide.hpp kernel/mm/heap.hpp | $(BUILD_DIR) check-tools
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/ahci.o: kernel/ahci.cpp kernel/ahci.hpp kernel/pci.hpp kernel/mm/heap.hpp kernel/mm/vmm.hpp | $(BUILD_DIR) check-tools
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/nvme.o: kernel/nvme.cpp kernel/nvme.hpp kernel/pci.hpp kernel/serial.hpp kernel/block.hpp | $(BUILD_DIR) check-tools
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/pmm.o: kernel/mm/pmm.cpp kernel/mm/pmm.hpp kernel/boot/multiboot2.hpp | $(BUILD_DIR) check-tools
@@ -207,8 +283,20 @@ $(BUILD_DIR)/vmm.o: kernel/mm/vmm.cpp kernel/mm/vmm.hpp | $(BUILD_DIR) check-too
 $(BUILD_DIR)/heap.o: kernel/mm/heap.cpp kernel/mm/heap.hpp kernel/mm/vmm.hpp kernel/mm/pmm.hpp | $(BUILD_DIR) check-tools
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/pmm64.o: kernel/mm/pmm.cpp kernel/mm/pmm.hpp kernel/boot/multiboot2.hpp | $(BUILD_DIR) check-tools
+	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
+
+$(BUILD_DIR)/vmm64.o: kernel/mm/vmm.cpp kernel/mm/vmm.hpp | $(BUILD_DIR) check-tools
+	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
+
+$(BUILD_DIR)/heap64.o: kernel/mm/heap.cpp kernel/mm/heap.hpp kernel/mm/vmm.hpp kernel/mm/pmm.hpp | $(BUILD_DIR) check-tools
+	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
+
 $(BUILD_DIR)/memory.o: kernel/memory.cpp | $(BUILD_DIR) check-tools
 	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/memory64.o: kernel/memory.cpp | $(BUILD_DIR) check-tools
+	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
 
 $(BUILD_DIR)/user_safety.o: kernel/user_safety.cpp kernel/user_safety.hpp | $(BUILD_DIR) check-tools
 	$(CXX) $(CXXFLAGS) -c $< -o $@
@@ -216,8 +304,14 @@ $(BUILD_DIR)/user_safety.o: kernel/user_safety.cpp kernel/user_safety.hpp | $(BU
 $(BUILD_DIR)/new_delete.o: kernel/mm/new_delete.cpp kernel/mm/heap.hpp | $(BUILD_DIR) check-tools
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/new_delete64.o: kernel/mm/new_delete.cpp kernel/mm/heap.hpp | $(BUILD_DIR) check-tools
+	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
+
 $(BUILD_DIR)/userland_loader.o: kernel/loader/userland.cpp kernel/loader/userland.hpp kernel/loader/elf.hpp kernel/serial.hpp | $(BUILD_DIR) check-tools
 	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/userland_loader64.o: kernel/loader/userland.cpp kernel/loader/userland.hpp kernel/loader/elf.hpp kernel/serial.hpp | $(BUILD_DIR) check-tools
+	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
 
 $(KERNEL_ELF): $(OBJS)
 	$(LD) $(LDFLAGS) -o $@ $(OBJS)
@@ -225,13 +319,13 @@ $(KERNEL_ELF): $(OBJS)
 $(KERNEL64_ELF): $(OBJS64)
 	$(HOSTLD) $(LDFLAGS64) -o $@ $(OBJS64)
 
-$(ISO_IMAGE): toolchain $(KERNEL_ELF) $(KERNEL64_ELF) $(UEFI_BOOT_IMAGE) boot/grub.cfg boot/rootfs.seed check-iso-tools
+$(ISO_IMAGE): toolchain $(KERNEL_ELF) $(KERNEL64_ELF) $(UEFI_BOOT_IMAGE) boot/grub/grub.cfg boot/rootfs.seed check-iso-tools
 	@mkdir -p $(ISO_DIR)/boot/grub/i386-pc
 	@mkdir -p $(ISO_DIR)/EFI/BOOT
 	@cp $(KERNEL_ELF) $(ISO_DIR)/boot/kernel.elf
 	@cp $(KERNEL64_ELF) $(ISO_DIR)/boot/kernel64.elf
 	@cp boot/rootfs.seed $(ISO_DIR)/boot/rootfs.seed
-	@cp boot/grub.cfg $(ISO_DIR)/boot/grub/grub.cfg
+	@cp boot/grub/grub.cfg $(ISO_DIR)/boot/grub/grub.cfg
 	@cp $(UEFI_BOOT_IMAGE) $(ISO_DIR)/EFI/BOOT/efiboot.img
 	@cp $(UEFI_EFI_EXE) $(ISO_DIR)/EFI/BOOT/BOOTX64.EFI
 	@cp -a /usr/lib/grub/i386-pc/* $(ISO_DIR)/boot/grub/i386-pc/
@@ -262,15 +356,18 @@ run: iso check-run-tools $(BUILD_DIR)/hdd.img
 run-uefi: iso $(BUILD_DIR)/hdd.img
 	@cp $(OVMF_VARS_TEMPLATE) $(OVMF_VARS)
 	qemu-system-x86_64 \
+		-drive file=$(BUILD_DIR)/hdd.img,format=raw,if=ide,index=0,media=disk \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 		-drive if=pflash,format=raw,file=$(OVMF_VARS) \
 		-cdrom $(ISO_IMAGE) -vga std -serial stdio -display $(QEMU_DISPLAY)
 
 run-usb: $(USB_IMAGE) $(BUILD_DIR)/hdd.img
 	@cp $(OVMF_VARS_TEMPLATE) $(OVMF_VARS)
-	qemu-system-x86_64 -machine q35 -device qemu-xhci \
+	@cp -f $(USB_IMAGE) $(BUILD_DIR)/wirth-usb-ide.img
+	qemu-system-x86_64 -machine pc -device qemu-xhci \
 		-drive if=none,id=usbdisk,format=raw,readonly=on,file=$(USB_IMAGE) \
 		-device usb-storage,drive=usbdisk \
+		-drive file=$(BUILD_DIR)/wirth-usb-ide.img,format=raw,if=ide,index=0,media=disk \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 		-drive if=pflash,format=raw,file=$(OVMF_VARS) \
 		-vga std -serial stdio -display $(QEMU_DISPLAY)

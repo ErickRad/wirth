@@ -38,9 +38,7 @@ static uint8_t ata_status() {
 }
 
 void ide_init() {
-    // Disable interrupts on primary ATA controller
     io::outb(ATA_CONTROL, 0);
-    serial::write("ide: init\n");
 }
 
 bool ide_present() {
@@ -57,13 +55,26 @@ bool ide_present() {
     ata_delay();
 
     uint8_t st = ata_status();
-    if (st == 0) return false;
 
-    // wait for BSY clear
-    while (st & 0x80) st = ata_status();
+    // treat 0 or 0xFF as no device (reads from unmapped ports can return 0xFF)
+    if (st == 0 || st == 0xFF) {
+        return false;
+    }
+
+    // wait for BSY clear, but time out to avoid infinite hang
+    int to = 100000;
+    while ((st & 0x80) && to-- > 0) {
+        st = ata_status();
+    }
+
+    if (to <= 0) {
+        return false;
+    }
 
     // If ERR set, no identify
-    if (st & 0x01) return false;
+    if (st & 0x01) {
+        return false;
+    }
 
     return true;
 }
@@ -79,17 +90,28 @@ bool ide_read_sectors(uint32_t lba, uint8_t* buf, uint32_t count) {
         io::outb(ATA_LBA_HIGH, (uint8_t)((cur >> 16) & 0xFF));
         io::outb(ATA_COMMAND, 0x20); // READ SECTORS
 
-        // wait for BSY clear
+        // wait for BSY clear (with timeout)
         uint8_t st = ata_status();
-        while (st & 0x80) st = ata_status();
+        int to = 100000;
+        while ((st & 0x80) && to-- > 0) {
+            st = ata_status();
+        }
 
-        // wait for DRQ
-        while (!(st & 0x08)) st = ata_status();
+        if (to <= 0) return false;
+
+        // wait for DRQ (with timeout)
+        to = 100000;
+        while (!(st & 0x08) && to-- > 0) {
+            st = ata_status();
+        }
+
+        if (to <= 0) return false;
 
         // read 256 words
         for (int i = 0; i < 256; ++i) {
             uint16_t w = inw(ATA_DATA);
-            buf[0] = w & 0xFF; buf[1] = (w >> 8) & 0xFF;
+            buf[0] = static_cast<uint8_t>(w & 0xFF);
+            buf[1] = static_cast<uint8_t>((w >> 8) & 0xFF);
             buf += 2;
         }
     }
@@ -110,16 +132,26 @@ bool ide_write_sectors(uint32_t lba, const uint8_t* buf, uint32_t count) {
 
         io::outb(ATA_COMMAND, 0x30); // WRITE SECTORS
 
-        // wait for BSY clear
+        // wait for BSY clear (with timeout)
         uint8_t st = ata_status();
-        while (st & 0x80) st = ata_status();
-        
-        // wait for DRQ
-        while (!(st & 0x08)) st = ata_status();
+        int to = 100000;
+        while ((st & 0x80) && to-- > 0) {
+            st = ata_status();
+        }
+
+        if (to <= 0) return false;
+
+        // wait for DRQ (with timeout)
+        to = 100000;
+        while (!(st & 0x08) && to-- > 0) {
+            st = ata_status();
+        }
+
+        if (to <= 0) return false;
 
         // write 256 words
         for (int i = 0; i < 256; ++i) {
-            uint16_t w = (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
+            uint16_t w = static_cast<uint16_t>(buf[0]) | (static_cast<uint16_t>(buf[1]) << 8);
             outw(ATA_DATA, w);
             buf += 2;
         }
@@ -127,6 +159,58 @@ bool ide_write_sectors(uint32_t lba, const uint8_t* buf, uint32_t count) {
         // flush
         io::outb(ATA_COMMAND, 0xE7); // FLUSH CACHE
     }
+    return true;
+}
+
+bool ide_identify(uint8_t* out_buf) {
+    if (out_buf == nullptr) return false;
+
+    // select master
+    io::outb(ATA_DRIVE, 0xA0);
+    ata_delay();
+
+    io::outb(ATA_SECTOR_COUNT, 0);
+    io::outb(ATA_LBA_LOW, 0);
+    io::outb(ATA_LBA_MID, 0);
+    io::outb(ATA_LBA_HIGH, 0);
+    io::outb(ATA_COMMAND, 0xEC); // IDENTIFY DEVICE
+
+    ata_delay();
+
+    uint8_t st = ata_status();
+
+    if (st == 0 || st == 0xFF) {
+        return false;
+    }
+
+    // wait for BSY clear (with timeout)
+    int to = 100000;
+    while ((st & 0x80) && to-- > 0) {
+        st = ata_status();
+    }
+
+    if (to <= 0) return false;
+
+    // If ERR set, identification failed
+    if (st & 0x01) {
+        return false;
+    }
+
+    // wait for DRQ (with timeout)
+    to = 100000;
+    while (!(st & 0x08) && to-- > 0) {
+        st = ata_status();
+    }
+
+    if (to <= 0) return false;
+
+    // read 256 words
+    for (int i = 0; i < 256; ++i) {
+        uint16_t w = inw(ATA_DATA);
+        out_buf[i * 2] = static_cast<uint8_t>(w & 0xFF);
+        out_buf[i * 2 + 1] = static_cast<uint8_t>((w >> 8) & 0xFF);
+    }
+
     return true;
 }
 

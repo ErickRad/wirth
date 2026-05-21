@@ -1,6 +1,7 @@
 #include "serial.hpp"
 
 #include "arch/x86/io.hpp"
+#include "video.hpp"
 
 namespace {
 
@@ -28,6 +29,8 @@ void init() {
     arch::x86::io::outb(kCom1Port + 3, 0x03);
     arch::x86::io::outb(kCom1Port + 2, 0xC7);
     arch::x86::io::outb(kCom1Port + 4, 0x0B);
+    
+    kernel::video::init();
 }
 
 void write_char(char c) {
@@ -42,6 +45,7 @@ void write_char(char c) {
     }
 
     arch::x86::io::outb(kCom1Port, static_cast<uint8_t>(c));
+    kernel::video::write_char(c);
 }
 
 void write(const char* text) {

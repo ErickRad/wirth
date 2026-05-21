@@ -10,6 +10,9 @@
 #include "serial.hpp"
 #include "task/scheduler.hpp"
 #include "storage.hpp"
+#include "pci.hpp"
+#include "drivers/ide.hpp"
+#include "ahci.hpp"
 
 namespace {
 
@@ -1945,6 +1948,7 @@ void cmd_ps(ShellContext&, int, char*[]);
 void cmd_meminfo(ShellContext&, int, char*[]);
 void cmd_free(ShellContext&, int, char*[]);
 void cmd_df(ShellContext&, int, char*[]);
+void cmd_lsblk(ShellContext&, int, char*[]);
 void cmd_sync(ShellContext&, int, char*[]);
 void cmd_pathjoin(ShellContext&, int, char*[]);
 void cmd_realpath(ShellContext&, int, char*[]);
@@ -1956,12 +1960,14 @@ void cmd_touchmany(ShellContext&, int, char*[]);
 void cmd_rmmany(ShellContext&, int, char*[]);
 void cmd_cpu(ShellContext&, int, char*[]);
 void cmd_devices(ShellContext&, int, char*[]);
+void cmd_pci(ShellContext&, int, char*[]);
 void cmd_drivers(ShellContext&, int, char*[]);
 void cmd_pkg(ShellContext&, int, char*[]);
 void cmd_reboot(ShellContext&, int, char*[]);
 void cmd_poweroff(ShellContext&, int, char*[]);
 void cmd_exit_shell(ShellContext&, int, char*[]);
 void cmd_history(ShellContext&, int, char*[]);
+void cmd_ahci(ShellContext&, int, char*[]);
 
 #define CMD(name, fn) \
     { name, fn }
@@ -1979,11 +1985,11 @@ const CommandEntry kCommands[] = {
     CMD("pwd", cmd_pwd), CMD("cwd", cmd_pwd), CMD("whereami", cmd_pwd), CMD("here", cmd_pwd),
     CMD("cd", cmd_cd), CMD("chdir", cmd_cd), CMD("changedir", cmd_cd), CMD("goto", cmd_cd),
 
-    CMD("ls", cmd_ls), CMD("ld", cmd_ls), CMD("dir", cmd_ls), CMD("ll", cmd_ls), CMD("la", cmd_ls),
+    CMD("ld", cmd_ls), CMD("dir", cmd_ls), CMD("ll", cmd_ls), CMD("la", cmd_ls),
     CMD("l", cmd_ls), CMD("list", cmd_ls), CMD("listdir", cmd_ls), CMD("contents", cmd_ls),
     CMD("browse", cmd_ls), CMD("showdir", cmd_ls), CMD("showfiles", cmd_ls), CMD("list-directory", cmd_ls),
 
-    CMD("mkdir", cmd_mkdir), CMD("md", cmd_mkdir), CMD("mk", cmd_mkdir), CMD("makedir", cmd_mkdir),
+    CMD("md", cmd_mkdir), CMD("mk", cmd_mkdir), CMD("makedir", cmd_mkdir),
     CMD("newdir", cmd_mkdir), CMD("createdir", cmd_mkdir), CMD("create-dir", cmd_mkdir),
 
     CMD("rmdir", cmd_rmdir), CMD("rd", cmd_rmdir), CMD("rmd", cmd_rmdir), CMD("removedir", cmd_rmdir),
@@ -2017,10 +2023,12 @@ const CommandEntry kCommands[] = {
     CMD("uname", cmd_uname), CMD("ver", cmd_uname), CMD("version", cmd_uname), CMD("about", cmd_uname),
     CMD("sysinfo", cmd_uname), CMD("kernel", cmd_uname),
     CMD("cpu", cmd_cpu), CMD("cpuid", cmd_cpu), CMD("lscpu", cmd_cpu), CMD("hwinfo", cmd_cpu),
+    CMD("lspci", cmd_pci), CMD("pci", cmd_pci),
+    CMD("ahci", cmd_ahci),
     CMD("devices", cmd_devices), CMD("devs", cmd_devices), CMD("lsdev", cmd_devices), CMD("lsdevices", cmd_devices),
     CMD("drivers", cmd_drivers), CMD("lsdrv", cmd_drivers), CMD("drvs", cmd_drivers), CMD("modules", cmd_drivers),
     CMD("history", cmd_history), CMD("hlist", cmd_history),
-    CMD("df", cmd_df), CMD("disk", cmd_df), CMD("storage", cmd_df), CMD("sync", cmd_sync),
+    CMD("df", cmd_df), CMD("disk", cmd_df), CMD("storage", cmd_df), CMD("lsdisk", cmd_lsblk), CMD("lsblk", cmd_lsblk), CMD("sync", cmd_sync),
     CMD("apt", cmd_pkg), CMD("apt-get", cmd_pkg), CMD("pkg", cmd_pkg), CMD("pkgmgr", cmd_pkg),
 
     CMD("basename", cmd_basename), CMD("base", cmd_basename),
@@ -2113,7 +2121,7 @@ void cmd_help(ShellContext&, int argc, char* argv[]) {
     kernel::serial::write("groups: core | fs | system | info | power\n");
     
     if (group == nullptr || text_equal(group, "all") || text_equal(group, "core")) {
-        kernel::serial::write("core: ls/ld dir cd pwd mkdir/md rmdir/rd cat/print touch rm echo cp mv head tail wc cmp stat tree env uname id whoami clear\n");
+        kernel::serial::write("core: ld dir cd pwd mkdir/md rmdir/rd cat/print touch rm echo cp mv head tail wc cmp stat tree env uname id whoami clear\n");
     }
     
     if (group == nullptr || text_equal(group, "all") || text_equal(group, "fs")) {
@@ -2139,7 +2147,7 @@ void cmd_help(ShellContext&, int argc, char* argv[]) {
 
 void cmd_clear(ShellContext&, int, char*[]) {
     for (uint32_t i = 0; i < 30; ++i) {
-        kernel::serial::write("\n");
+        kernel::serial::write("\r\n");
     }
 }
 
@@ -2193,7 +2201,7 @@ void cmd_ls(ShellContext& ctx, int argc, char* argv[]) {
     if (argc < 2) {
         copy_text(path, ctx.cwd, sizeof(path));
     
-    } else if (!arg_to_path(ctx, argv[1], path, "ls [dir]")) {
+    } else if (!arg_to_path(ctx, argv[1], path, "ld [dir]")) {
         return;
     
     }
@@ -2202,15 +2210,17 @@ void cmd_ls(ShellContext& ctx, int argc, char* argv[]) {
     const int n = kernel::fs::g_fs->readdir(path, entries, 32);
     
     if (n < 0) {
-        kernel::serial::write("ls: cannot list directory\n");
+        kernel::serial::write("ld: cannot list directory\n");
         return;
     }
     
     for (int i = 0; i < n; ++i) {
         kernel::serial::write(entries[i].is_directory != 0 ? "d " : "f ");
         kernel::serial::write(entries[i].name);
-        kernel::serial::write("\n");
     }
+
+    kernel::serial::write("\r\n");
+
 }
 
 void cmd_mkdir(ShellContext& ctx, int argc, char* argv[]) {
@@ -2447,6 +2457,39 @@ void cmd_cpu(ShellContext&, int argc, char* argv[]) {
     kernel::serial::write_hex(ecx);
 
     kernel::serial::write("\n");
+
+    // Try to read extended brand string if available
+    uint32_t max_ext = 0;
+    cpuid(0x80000000u, 0, max_ext, ebx, ecx, edx);
+
+    if (max_ext >= 0x80000004u) {
+        char brand[49] = {};
+        uint32_t a = 0, b = 0, c = 0, d = 0;
+
+        cpuid(0x80000002u, 0, a, b, c, d);
+        *(uint32_t*)(brand + 0) = a;
+        *(uint32_t*)(brand + 4) = b;
+        *(uint32_t*)(brand + 8) = c;
+        *(uint32_t*)(brand + 12) = d;
+
+        cpuid(0x80000003u, 0, a, b, c, d);
+        *(uint32_t*)(brand + 16) = a;
+        *(uint32_t*)(brand + 20) = b;
+        *(uint32_t*)(brand + 24) = c;
+        *(uint32_t*)(brand + 28) = d;
+
+        cpuid(0x80000004u, 0, a, b, c, d);
+        *(uint32_t*)(brand + 32) = a;
+        *(uint32_t*)(brand + 36) = b;
+        *(uint32_t*)(brand + 40) = c;
+        *(uint32_t*)(brand + 44) = d;
+
+        brand[48] = '\0';
+
+        kernel::serial::write("model name: ");
+        kernel::serial::write(brand);
+        kernel::serial::write("\n");
+    }
 }
 
 void cmd_devices(ShellContext&, int, char*[]) {
@@ -2472,6 +2515,57 @@ void cmd_drivers(ShellContext&, int, char*[]) {
     kernel::serial::write("- ramfs\n");
     kernel::serial::write("- syscall\n");
     kernel::serial::write("- scheduler\n");
+}
+
+void cmd_pci(ShellContext&, int, char*[]) {
+    kernel::pci::Device devs[64];
+    uint32_t found = 0;
+
+    if (!kernel::pci::scan_devices(devs, 64, &found) || found == 0) {
+        kernel::serial::write("pci: no devices found\n");
+        return;
+    }
+
+    for (uint32_t i = 0; i < found; ++i) {
+        const kernel::pci::Device& d = devs[i];
+
+        kernel::serial::write("PCI ");
+        write_dec(d.bus);
+        kernel::serial::write(":");
+        write_dec(d.slot);
+        kernel::serial::write(".");
+        write_dec(d.func);
+
+        kernel::serial::write(" vendor=0x");
+        kernel::serial::write_hex(d.vendor_id);
+        kernel::serial::write(" device=0x");
+        kernel::serial::write_hex(d.device_id);
+
+        kernel::serial::write(" class=0x");
+        kernel::serial::write_hex(d.class_code);
+        kernel::serial::write(" sub=0x");
+        kernel::serial::write_hex(d.subclass);
+        kernel::serial::write(" progif=0x");
+        kernel::serial::write_hex(d.prog_if);
+
+        kernel::serial::write(" irq=");
+        write_dec(d.irq);
+
+        for (int b = 0; b < 6; ++b) {
+            if (d.bar[b] != 0u) {
+                kernel::serial::write("  BAR");
+                write_dec(static_cast<uint32_t>(b));
+                kernel::serial::write("=0x");
+                kernel::serial::write_hex(d.bar[b]);
+            }
+        }
+
+        kernel::serial::write("\n");
+    }
+}
+
+void cmd_ahci(ShellContext&, int, char*[]) {
+    kernel::ahci::print_info();
 }
 
 void cmd_cp(ShellContext& ctx, int argc, char* argv[]) {
@@ -3441,6 +3535,45 @@ void cmd_df(ShellContext&, int, char*[]) {
     kernel::serial::write(" approx_bytes=");
     write_dec(kernel::storage_used_sectors() * 512u);
 
+    kernel::serial::write("\n");
+}
+
+void cmd_lsblk(ShellContext&, int, char*[]) {
+    uint8_t iddata[512] = {};
+
+    if (!kernel::drivers::ide_identify(iddata)) {
+        kernel::serial::write("lsblk: no IDE disk present\n");
+        return;
+    }
+
+    // model string is in words 27..46 (40 bytes), each word is byte-swapped
+    char model[41] = {};
+    for (int w = 27; w <= 46; ++w) {
+        const int base = (w - 27) * 2;
+        model[base + 0] = static_cast<char>(iddata[w * 2 + 1]);
+        model[base + 1] = static_cast<char>(iddata[w * 2 + 0]);
+    }
+
+    // trim trailing spaces
+    for (int i = 39; i >= 0; --i) {
+        if (model[i] == ' ' || model[i] == '\0') {
+            model[i] = '\0';
+        } else {
+            break;
+        }
+    }
+
+    // total user-addressable sectors (28-bit) at words 60..61 (offset 120)
+    uint32_t sectors = *(uint32_t*)(iddata + 120);
+    uint32_t kib = sectors / 2; // sectors*512 / 1024 = sectors/2
+
+    kernel::serial::write("NAME\tSIZE\tTYPE\n");
+    kernel::serial::write("hd0\t");
+    write_dec(kib);
+    kernel::serial::write(" KiB\t disk\n");
+
+    kernel::serial::write("MODEL: ");
+    kernel::serial::write(model);
     kernel::serial::write("\n");
 }
 

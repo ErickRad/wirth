@@ -20,5 +20,8 @@ bool storage_read(const StorageHandle& h, uint8_t* out_buf);
 bool storage_read_raw(uint32_t start_lba, uint32_t sectors, uint8_t* out_buf);
 void storage_restore_packages();
 bool storage_add_index_entry(const char* name, uint32_t start_lba, uint32_t sectors);
+// Save a snapshot of the in-memory filesystem to persistent storage.
+// The snapshot is registered in the on-disk index under `name`.
+bool storage_snapshot_save(const char* name);
 
 } // namespace kernel

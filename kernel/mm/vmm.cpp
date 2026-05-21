@@ -72,6 +72,7 @@ void init() {
     g_current_page_directory = &g_kernel_page_directory[0];
 
     // Identity-map first 64 MiB so early kernel code/data/devices stay reachable.
+
     for (uint32_t addr = 0; addr < 64u * 1024u * 1024u; addr += kPageSize) {
         map_page(addr, addr, true, false);
     }
@@ -140,7 +141,6 @@ bool unmap_page(uint32_t virt) {
 
     if ((table[tbl_index] & kPagePresent) == 0) {
         return false;
-
     }
 
     table[tbl_index] = 0;

@@ -19,46 +19,59 @@ constexpr uint8_t kInitElf[] = {
 
 void copy_text(char* dst, const char* src, uint32_t max_size) {
     uint32_t i = 0;
+
     while (i + 1 < max_size && src[i] != '\0') {
         dst[i] = src[i];
         ++i;
     }
+
     dst[i] = '\0';
 }
 
 bool text_equal(const char* a, const char* b) {
     uint32_t i = 0;
+
     while (a[i] != '\0' && b[i] != '\0') {
+
         if (a[i] != b[i]) {
             return false;
         }
+
         ++i;
     }
+
     return a[i] == b[i];
 }
 
 uint32_t text_len(const char* text) {
     uint32_t n = 0;
+
     while (text[n] != '\0') {
         ++n;
     }
+
     return n;
 }
 
 bool text_starts_with(const char* text, const char* prefix) {
     uint32_t i = 0;
+
     while (prefix[i] != '\0') {
+
         if (text[i] != prefix[i]) {
             return false;
         }
+
         ++i;
     }
+
     return true;
 }
 
 void copy_bytes(void* dst, const void* src, uint32_t len) {
     uint8_t* d = static_cast<uint8_t*>(dst);
     const uint8_t* s = static_cast<const uint8_t*>(src);
+
     for (uint32_t i = 0; i < len; ++i) {
         d[i] = s[i];
     }
@@ -101,6 +114,7 @@ bool RamFs::normalize_path(const char* path, char* out_path, uint32_t out_size) 
     if (path[0] != '/') {
         return false;
     }
+
     uint32_t out_i = 0;
     out_path[out_i++] = '/';
 
@@ -114,45 +128,56 @@ bool RamFs::normalize_path(const char* path, char* out_path, uint32_t out_size) 
             if (prev_slash) {
                 continue;
             }
+
             if (out_i + 1 >= out_size) {
                 return false;
             }
 
             out_path[out_i++] = '/';
             prev_slash = true;
+
             continue;
         }
 
         if (out_i + 1 >= out_size) {
             return false;
         }
+
         out_path[out_i++] = c;
         prev_slash = false;
     }
+
     if (out_i > 1 && out_path[out_i - 1] == '/') {
         --out_i;
     }
+
     out_path[out_i] = '\0';
+
     return true;
 }
 
 Inode* RamFs::find_inode(const char* path) {
+
     for (uint32_t i = 0; i < kMaxInodes; ++i) {
         if (!m_inodes[i].used) {
             continue;
         }
+
         if (text_equal(m_inodes[i].name, path)) {
             return &m_inodes[i];
         }
     }
+
     return nullptr;
 }
 
 Inode* RamFs::create_inode(const char* path, bool is_directory) {
     for (uint32_t i = 0; i < kMaxInodes; ++i) {
+
         if (m_inodes[i].used) {
             continue;
         }
+
         m_inodes[i].used = true;
         m_inodes[i].is_directory = is_directory;
         m_inodes[i].data = nullptr;
@@ -161,8 +186,10 @@ Inode* RamFs::create_inode(const char* path, bool is_directory) {
         m_inodes[i].capacity = 0;
 
         copy_text(m_inodes[i].name, path, sizeof(m_inodes[i].name));
+
         return &m_inodes[i];
     }
+
     return nullptr;
 }
 
@@ -170,6 +197,7 @@ bool RamFs::parent_directory_exists(const char* normalized_path) {
     if (text_equal(normalized_path, "/")) {
         return true;
     }
+
     const uint32_t len = text_len(normalized_path);
 
     if (len < 2) {
@@ -186,6 +214,7 @@ bool RamFs::parent_directory_exists(const char* normalized_path) {
     int last_slash = -1;
 
     for (uint32_t i = 0; i < len; ++i) {
+
         if (parent[i] == '/') {
             last_slash = static_cast<int>(i);
         }
@@ -203,11 +232,14 @@ bool RamFs::parent_directory_exists(const char* normalized_path) {
 }
 
 int RamFs::alloc_fd() {
+
     for (uint32_t i = 0; i < kMaxFds; ++i) {
+
         if (!m_fds[i].used) {
             return static_cast<int>(i);
         }
     }
+
     return -1;
 }
 
@@ -486,7 +518,7 @@ bool RamFs::init() {
     copy_bytes(init_elf->data, kInitElf, sizeof(kInitElf));
     init_elf->size = sizeof(kInitElf);
 
-    serial::write("[wirth/ramfs] mounted rootfs (/root, /home/root, /usr, /var, /etc, /bin/init.elf)\n");
+    // ramfs mounted
     return true;
 }
 
@@ -622,6 +654,7 @@ int RamFs::close(int fd) {
 
 int RamFs::mkdir(const char* path) {
     kernel::sync::LockGuard guard(m_lock);
+
 
     char normalized[64];
     

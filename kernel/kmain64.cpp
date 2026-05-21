@@ -10,6 +10,13 @@ extern "C" const unsigned kEmbeddedRootfsSeedSize;
 #include "arch/x86_64/interrupts.hpp"
 #include "boot/multiboot2.hpp"
 #include "serial.hpp"
+#include "video.hpp"
+#include "storage.hpp"
+#include "pci.hpp"
+#include "drivers/ide.hpp"
+#include "efifs.hpp"
+#include "xhci.hpp"
+#include "usb_mass_storage.hpp"
 
 namespace {
 
@@ -21,7 +28,31 @@ constexpr size_t kKernelHeapSize = 1024u * 1024u;
 alignas(16) static uint8_t g_kernel_heap[kKernelHeapSize] = {};
 static size_t g_kernel_heap_used = 0;
 
-static kernel::fs::RamFs g_ramfs;
+static kernel::fs::RamFs* g_ramfs = nullptr;
+
+// Console output helper: emit via serial forwards to VGA
+static inline void out(const char* s) {
+    if (s == nullptr) return;
+    kernel::serial::write(s);
+}
+
+static inline void out_char(char c) {
+    kernel::serial::write_char(c);
+}
+
+bool filesystem_ready();
+void copy_text(char* dst, const char* src, uint32_t max_size);
+bool text_equal(const char* a, const char* b);
+bool text_starts_with(const char* text, const char* prefix);
+bool path_equals(const char* a, const char* b);
+bool is_digit(char c);
+bool path_starts_with(const char* text, const char* prefix);
+bool resolve_path(const char* cwd, const char* input, char* out, uint32_t out_size);
+bool keyboard_read_char_nonblocking(char* out_char);
+
+uint32_t text_len(const char* text);
+const char* canonical_command_name(const char* name);
+void* kernel_alloc(size_t size, size_t alignment);
 
 struct CommandAlias {
     const char* name;
@@ -42,7 +73,626 @@ static const CommandAlias kCommandAliases[kMaxCommands] = {
     {"pwd", "pwd", 49}, {"cwd", "pwd", 49}, {"whereami", "pwd", 49}, {"here", "pwd", 49},
     {"help", "help", 49}, {"?", "help", 49}, {"h", "help", 49}, {"commands", "help", 49},
     {"cmds", "help", 49}, {"apropos", "help", 49}, {"usage", "help", 49},
+    {"reboot", "reboot", 0}, {"poweroff", "poweroff", 0}, {"lsdisk", "lsdisk", 0},
+    {"lscpu", "lscpu", 0}, {"lspci", "lspci", 0}, {"tree", "tree", 0},
+    {"cp", "cp", 0}, {"mv", "mv", 0}, {"rm", "rm", 0}, {"rmdir", "rmdir", 0},
+    {"cat", "cat", 0}, {"touch", "touch", 0}, {"stat", "stat", 0},
 };
+
+const char* basename_of(const char* path) {
+    if (path == nullptr) return "";
+
+    int last = -1;
+    for (int i = 0; path[i] != '\0'; ++i) {
+        if (path[i] == '/'){
+            last = i;
+        } 
+    }
+
+    return (last < 0) ? path : (path + last + 1);
+}
+
+bool fs_copy_file(const char* src, const char* dst) {
+    if (!filesystem_ready()) {
+        out("fs unavailable\n");
+        return false;
+    }
+
+    int in_fd = kernel::fs::g_fs->open(src, kernel::fs::kOpenRead);
+
+    if (in_fd < 0) {
+        out("cp: source not found\n");
+        return false;
+    }
+
+    int out_fd = kernel::fs::g_fs->open(dst, kernel::fs::kOpenWrite | kernel::fs::kOpenCreate | kernel::fs::kOpenTruncate);
+
+    if (out_fd < 0) {
+        out("cp: cannot create destination\n");
+        kernel::fs::g_fs->close(in_fd);
+
+        return false;
+    }
+
+    const uint32_t BUF_SZ = 256;
+    uint8_t buf[BUF_SZ];
+
+    while (true) {
+        int n = kernel::fs::g_fs->read(in_fd, buf, BUF_SZ);
+        if (n < 0) {
+            out("cp: read error\n");
+
+            kernel::fs::g_fs->close(in_fd);
+            kernel::fs::g_fs->close(out_fd);
+
+            return false;
+        }
+
+        if (n == 0) break;
+        int w = kernel::fs::g_fs->write(out_fd, buf, static_cast<uint32_t>(n));
+
+        if (w < 0) {
+            out("cp: write error\n");
+
+            kernel::fs::g_fs->close(in_fd);
+            kernel::fs::g_fs->close(out_fd);
+
+            return false;
+        }
+    }
+
+    kernel::fs::g_fs->close(in_fd);
+    kernel::fs::g_fs->close(out_fd);
+
+    return true;
+}
+
+bool fs_move_file(const char* src, const char* dst) {
+    if (!fs_copy_file(src, dst)) 
+        return false;
+
+    if (kernel::fs::g_fs->unlink(src) == 0) 
+        return true;
+
+    out("mv: could not remove source after copy\n");
+
+    return false;
+}
+
+bool fs_remove_path(const char* path) {
+
+    if (!filesystem_ready()) {
+        kernel::serial::write("fs unavailable\n");
+        return false;
+    }
+
+    if (kernel::fs::g_fs->unlink(path) == 0) 
+        return true;
+
+    if (kernel::fs::g_fs->rmdir(path) == 0) 
+        return true;
+
+    return false;
+}
+
+void print_file(const char* path) {
+    
+    if (!filesystem_ready()) {
+        out("fs unavailable\n");
+        return;
+    }
+    
+    int fd = kernel::fs::g_fs->open(path, kernel::fs::kOpenRead);
+    
+    if (fd < 0) {
+        out("cat: file not found\n");
+        return;
+    }
+
+    const uint32_t BUF_SZ = 128;
+    char buf[BUF_SZ + 1];
+    
+    while (true) {
+        int n = kernel::fs::g_fs->read(fd, buf, BUF_SZ);
+    
+        if (n < 0) { out("cat: read error\n"); break; }
+        if (n == 0) break;
+    
+        buf[n] = '\0';
+        out(buf);
+    }
+
+    kernel::fs::g_fs->close(fd);
+}
+
+void print_tree_recursive(const char* path, int depth) {
+
+    if (!filesystem_ready()) return;
+    
+    kernel::fs::DirEntry entries[32] = {};
+
+    int count = kernel::fs::g_fs->readdir(path, entries, 32);
+    
+    if (count < 0) return;
+
+    for (int i = 0; i < count; ++i) {
+    
+        for (int d = 0; d < depth; ++d) out("  ");
+    
+        out(entries[i].name);
+        out(entries[i].is_directory ? "/\n" : "\n");
+
+        if (entries[i].is_directory) {
+            
+            char child[128] = {};
+
+            if (text_equal(path, "/")) {
+                child[0] = '/';
+
+                uint32_t pos = 1;
+                uint32_t j = 0;
+
+                while (entries[i].name[j] != '\0' && pos + 1 < sizeof(child)) {
+                    child[pos++] = entries[i].name[j++];
+                }
+
+                child[pos] = '\0';
+
+            } else {
+
+                uint32_t pos = 0;
+                uint32_t j = 0;
+
+                while (path[j] != '\0' && pos + 2 < sizeof(child)) {
+                    child[pos++] = path[j++];
+                }
+
+                if (pos + 2 < sizeof(child)) {
+                    child[pos++] = '/';
+                }
+
+                j = 0;
+
+                while (entries[i].name[j] != '\0' && pos + 1 < sizeof(child)) {
+                    child[pos++] = entries[i].name[j++];
+                }
+
+                child[pos] = '\0';
+            }
+
+            print_tree_recursive(child, depth + 1);
+        }
+    }
+}
+
+__attribute__((unused)) void show_lsdisk() {
+    uint8_t iddata[512] = {};
+
+    if (!kernel::drivers::ide_identify(iddata)) {
+        out("lsdisk: no IDE disk present\n");
+        return;
+    }
+
+    // model string is in words 27..46 (40 bytes), each word is byte-swapped
+    char model[41] = {};
+    for (int w = 27; w <= 46; ++w) {
+        const int base = (w - 27) * 2;
+        model[base + 0] = static_cast<char>(iddata[w * 2 + 1]);
+        model[base + 1] = static_cast<char>(iddata[w * 2 + 0]);
+    }
+
+    // trim trailing spaces
+    for (int i = 39; i >= 0; --i) {
+        if (model[i] == ' ' || model[i] == '\0') {
+            model[i] = '\0';
+        } else {
+            break;
+        }
+    }
+
+    // total user-addressable sectors (28-bit) at words 60..61 (offset 120)
+    uint32_t sectors = *(uint32_t*)(iddata + 120);
+    uint32_t kib = sectors / 2; // sectors*512 / 1024 = sectors/2
+
+    out("NAME\tSIZE\tTYPE\n");
+    out("hd0\t");
+    // write_dec is not available here; use serial helpers
+    kernel::serial::write_hex(kib);
+    out(" KiB\t disk\n");
+
+    out("MODEL: ");
+    out(model);
+    out("\n");
+
+    // attempt to read MBR and list partitions
+    uint8_t mbr[512] = {};
+    if (!kernel::drivers::ide_read_sectors(0, mbr, 1)) {
+        out("lsdisk: cannot read MBR\n");
+        return;
+    }
+
+    // Partition table entries at offset 446, 4 entries of 16 bytes
+    out("PARTS:\n");
+    for (int i = 0; i < 4; ++i) {
+        const uint8_t* pe = mbr + 446 + i * 16;
+        (void)pe[0];
+        uint8_t part_type = pe[4];
+        uint32_t start_lba = *(uint32_t*)(pe + 8);
+        uint32_t length = *(uint32_t*)(pe + 12);
+
+        if (part_type == 0 || length == 0) continue;
+
+        out("  ");
+        // print partition number and type
+        kernel::serial::write("part");
+        kernel::serial::write_hex((uint32_t)(i+1));
+        out(": ");
+        out("type=0x");
+        kernel::serial::write_hex(part_type);
+        out(" start=");
+        kernel::serial::write_hex(start_lba);
+        out(" sectors=");
+        kernel::serial::write_hex(length);
+        out("\n");
+    }
+}
+
+void show_lscpu() {
+    // cpuid brand string (extended leaves 0x80000002..0x80000004)
+    uint32_t eax = 0, ebx = 0, ecx = 0, edx = 0;
+
+    asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(0));
+    // basic info
+    out("Architecture: x86_64\n");
+    out("CPU(s): 1\n");
+
+    // extended max
+    uint32_t maxext = 0;
+    asm volatile("cpuid" : "=a"(maxext) : "a"(0x80000000) : "ebx","ecx","edx");
+
+    if (maxext >= 0x80000004u) {
+        char brand[49] = {};
+        uint32_t regs[4];
+
+        for (uint32_t i = 0; i < 3; ++i) {
+            asm volatile("cpuid" : "=a"(regs[0]), "=b"(regs[1]), "=c"(regs[2]), "=d"(regs[3]) : "a"(0x80000002u + i));
+            *(uint32_t*)(brand + i * 16 + 0) = regs[0];
+            *(uint32_t*)(brand + i * 16 + 4) = regs[1];
+            *(uint32_t*)(brand + i * 16 + 8) = regs[2];
+            *(uint32_t*)(brand + i * 16 + 12) = regs[3];
+        }
+
+        brand[48] = '\0';
+        out("Model: ");
+        out(brand);
+        out("\n");
+    } else {
+        out("Model: (unknown)\n");
+    }
+}
+
+void show_lspci() {
+    kernel::pci::Device devs[64];
+    uint32_t found = 0;
+
+    if (!kernel::pci::scan_devices(devs, 64, &found) || found == 0) {
+        out("lspci: no devices found\n");
+        return;
+    }
+
+    for (uint32_t i = 0; i < found; ++i) {
+        const kernel::pci::Device& d = devs[i];
+
+        // format: bb:ss.f vendor/device class
+        kernel::serial::write_hex((uint32_t)d.bus);
+        out(":");
+        kernel::serial::write_hex((uint32_t)d.slot);
+        out(".");
+        kernel::serial::write_hex((uint32_t)d.func);
+        out(" ");
+
+        out("vendor=0x"); kernel::serial::write_hex(d.vendor_id);
+        out(" device=0x"); kernel::serial::write_hex(d.device_id);
+        out(" class=0x"); kernel::serial::write_hex(d.class_code);
+        out(" sub=0x"); kernel::serial::write_hex(d.subclass);
+        out(" progif=0x"); kernel::serial::write_hex(d.prog_if);
+        out(" irq="); kernel::serial::write_hex(d.irq);
+
+        for (int b = 0; b < 6; ++b) {
+            if (d.bar[b] != 0u) {
+                out(" BAR"); kernel::serial::write_hex((uint32_t)b);
+                out("=0x"); kernel::serial::write_hex(d.bar[b]);
+            }
+        }
+
+        out("\n");
+    }
+}
+
+typedef int (*CmdHandler)(int argc, char* argv[], char* cwd);
+
+struct CmdEntry {
+    char name[32];
+    CmdHandler handler;
+};
+
+static CmdEntry g_cmd_table[1024] = {};
+static uint32_t g_cmd_count = 0;
+
+bool register_command(const char* name, CmdHandler handler) {
+    if (name == nullptr || handler == nullptr) return false;
+
+    for (uint32_t i = 0; i < g_cmd_count; ++i) {
+
+        if (text_equal(g_cmd_table[i].name, name)) {
+            g_cmd_table[i].handler = handler;
+
+            return true;
+        }
+    }
+
+    if (g_cmd_count >= sizeof(g_cmd_table) / sizeof(g_cmd_table[0])) return false;
+
+    copy_text(g_cmd_table[g_cmd_count].name, name, sizeof(g_cmd_table[g_cmd_count].name));
+
+    g_cmd_table[g_cmd_count].handler = handler;
+    ++g_cmd_count;
+
+    return true;
+}
+
+CmdHandler find_registered_command(const char* name) {
+    if (name == nullptr) return nullptr;
+
+    for (uint32_t i = 0; i < g_cmd_count; ++i) {
+        if (text_equal(g_cmd_table[i].name, name)) return g_cmd_table[i].handler;
+    }
+
+    const char* canon = canonical_command_name(name);
+
+    if (canon != nullptr && !text_equal(canon, name)) {
+
+        for (uint32_t i = 0; i < g_cmd_count; ++i) {
+        
+            if (text_equal(g_cmd_table[i].name, canon)) 
+                return g_cmd_table[i].handler;
+        }
+    }
+
+    return nullptr;
+}
+
+int cmd_stub(int argc, char* argv[], char* cwd) {
+    (void)argc; (void)argv; (void)cwd;
+
+    if (argc <= 0 || argv == nullptr) return 0;
+
+    out(argv[0]);
+    out(": stub (not implemented)\n");
+
+    return 0;
+}
+
+int cmd_echo(int argc, char* argv[], char* cwd) {
+    (void)cwd;
+
+    for (int i = 1; i < argc; ++i) {
+        out(argv[i]);
+
+        if (i + 1 < argc) out(" ");
+    }
+
+    out("\n");
+
+    return 0;
+}
+
+int cmd_sync(int argc, char* argv[], char* cwd) {
+    (void)argc; (void)argv; (void)cwd;
+
+    if (kernel::storage_ready()) {
+        out("sync: persisting rootfs...\n");
+        kernel::storage_snapshot_save("rootfs");
+
+    } else {
+        out("sync: no storage available\n");
+
+    }
+
+    return 0;
+}
+
+int cmd_exit(int argc, char* argv[], char* cwd) {
+    (void)argc; (void)argv; (void)cwd;
+
+    if (kernel::storage_ready()) {
+        out("persisting rootfs...\n");
+        kernel::storage_snapshot_save("rootfs");
+    }
+
+    out("exiting shell\n");
+    asm volatile("cli");
+
+    for (;;) asm volatile("hlt");
+
+    return 0;
+}
+
+int cmd_apt(int argc, char* argv[], char* cwd) {
+    (void)cwd;
+
+    if (argc < 2) {
+        out("apt: usage: apt <install|remove|list> [pkg]\n");
+        return 0;
+    }
+
+    if (text_equal(argv[1], "install")) {
+
+        if (argc < 3) { out("apt: install <pkg>\n"); return 0; }
+        out("apt: simulated install: ");
+        
+        out(argv[2]);
+        out("\n");
+        
+        return 0;
+    }
+
+    if (text_equal(argv[1], "remove")) {
+        if (argc < 3) { out("apt: remove <pkg>\n"); return 0; }
+        
+        out("apt: simulated remove: ");
+        
+        out(argv[2]);
+        out("\n");
+        
+        return 0;
+    }
+
+    if (text_equal(argv[1], "list")) {
+        out("apt: simulated package list (none)\n");
+        return 0;
+    }
+
+        out("apt: unknown subcommand\n");
+    return 0;
+}
+
+int cmd_nano(int argc, char* argv[], char* cwd) {
+    if (argc < 2) {
+        kernel::serial::write("nano: usage: nano <file>\n");
+        return 0;
+    }
+
+    char path[64] = {};
+    resolve_path(cwd, argv[1], path, sizeof(path));
+
+    if (filesystem_ready()) {
+        int fd = kernel::fs::g_fs->open(path, kernel::fs::kOpenRead);
+        
+        if (fd >= 0) {
+            const uint32_t BUF_SZ = 128;
+            char buf[BUF_SZ + 1];
+        
+            while (true) {
+                int n = kernel::fs::g_fs->read(fd, reinterpret_cast<uint8_t*>(buf), BUF_SZ);
+        
+                if (n <= 0) break;
+        
+                buf[n] = '\0';
+        
+                kernel::serial::write(buf);
+            }
+        
+            kernel::fs::g_fs->close(fd);
+            kernel::serial::write("\n--- end of file ---\n");
+        }
+    }
+
+    kernel::serial::write("[nano] enter lines, '.' on its own line to save\n");
+
+    const uint32_t MAX_BUF = 4096;
+    char* buffer = reinterpret_cast<char*>(kernel_alloc(MAX_BUF, 16));
+
+    if (buffer == nullptr) {
+        kernel::serial::write("nano: out of memory\n");
+        return 0;
+    }
+
+    uint32_t buf_pos = 0;
+
+    char linebuf[256] = {};
+    uint32_t linepos = 0;
+
+    while (true) {
+        char c = 0;
+
+        if (!kernel::serial::read_char_nonblocking(&c)) {
+
+            if (!keyboard_read_char_nonblocking(&c)) {
+
+                asm volatile("pause");
+                continue;
+            }
+        }
+
+        if (c == '\r' || c == '\n') {
+            kernel::serial::write("\n");
+            linebuf[linepos] = '\0';
+
+            if (linepos == 1 && linebuf[0] == '.') {
+                break;
+            }
+
+            for (uint32_t i = 0; i < linepos && buf_pos + 1 < MAX_BUF; ++i) {
+                buffer[buf_pos++] = linebuf[i];
+            }
+
+            if (buf_pos + 1 < MAX_BUF) buffer[buf_pos++] = '\n';
+
+            linepos = 0;
+            continue;
+        }
+
+        if (c == '\b' || c == 0x7F) {
+
+            if (linepos > 0) {
+                --linepos;
+                kernel::serial::write("\b \b");
+            }
+
+            continue;
+        }
+
+        if (c < 32 || c > 126) continue;
+
+        if (linepos + 1 < sizeof(linebuf)) {
+
+            linebuf[linepos++] = c;
+            kernel::serial::write_char(c);
+        }
+    }
+
+
+    if (filesystem_ready()) {
+        int fd = kernel::fs::g_fs->open(path, kernel::fs::kOpenWrite | kernel::fs::kOpenCreate | kernel::fs::kOpenTruncate);
+
+        if (fd >= 0) {
+
+            if (buf_pos > 0) {
+                kernel::fs::g_fs->write(fd, reinterpret_cast<const uint8_t*>(buffer), buf_pos);
+            }
+
+            kernel::fs::g_fs->close(fd);
+            kernel::serial::write("nano: saved\n");
+
+            return 0;
+        }
+    }
+
+    kernel::serial::write("nano: failed to save\n");
+    return 0;
+}
+
+// Bulk register default and stub commands
+void register_default_commands() {
+    register_command("echo", cmd_echo);
+    register_command("exit", cmd_exit);
+    register_command("apt", cmd_apt);
+    register_command("nano", cmd_nano);
+    register_command("sync", cmd_sync);
+
+    // register 300 stubs: cmd000..cmd299
+    for (int i = 0; i < 300; ++i) {
+        char tmp[16] = {};
+        int a = i / 100; int b = (i / 10) % 10; int c = i % 10;
+
+        tmp[0] = 'c'; tmp[1] = 'm'; tmp[2] = 'd'; tmp[3] = (char)('0' + a);
+        tmp[4] = (char)('0' + b); tmp[5] = (char)('0' + c); tmp[6] = '\0';
+
+        register_command(tmp, cmd_stub);
+    }
+}
+
 
 void copy_text(char* dst, const char* src, uint32_t max_size) {
     if (dst == nullptr || src == nullptr || max_size == 0) {
@@ -188,12 +838,12 @@ bool resolve_special_path_prefix(const char* cwd, const char* input, char* out, 
     if (input[0] == '~') {
 
         if (input[1] == '\0') {
-            copy_text(out, "/home", out_size);
+            copy_text(out, "/home/root", out_size);
             return true;
         }
 
         if (input[1] == '/') {
-            copy_text(out, "/home", out_size);
+            copy_text(out, "/home/root", out_size);
             const uint32_t len = text_len(out);
 
             if (len + 1 >= out_size) {
@@ -337,6 +987,8 @@ void apply_rootfs_seed_line(char* line) {
         return;
     }
 
+    // seed lines are applied silently
+
     char* command = cursor;
     while (*cursor != '\0' && *cursor != ' ' && *cursor != '\t') {
         ++cursor;
@@ -354,7 +1006,7 @@ void apply_rootfs_seed_line(char* line) {
         return;
     }
 
-    if (text_equal(command, "mkdir") || text_equal(command, "dir") || text_equal(command, "md")) {
+    if (text_equal(command, "mkdir") || text_equal(command, "md")) {
         kernel::fs::g_fs->mkdir(cursor);
     }
 }
@@ -398,9 +1050,10 @@ void rootfs_module_visitor(const kernel::boot::multiboot2::ModuleView& module, v
     if (ctx == nullptr || ctx->loaded) {
         return;
     }
-
     const char* const module_data = reinterpret_cast<const char*>(module.start_addr);
     const uint32_t module_size = module.end_addr > module.start_addr ? module.end_addr - module.start_addr : 0;
+
+    // load seed silently
     load_rootfs_seed(module_data, module_size);
     ctx->loaded = true;
 }
@@ -490,9 +1143,32 @@ void format_prompt_path(const char* cwd, char* out, uint32_t out_size) {
     if (cwd == nullptr || out == nullptr || out_size == 0) {
         return;
     }
-
     if (text_equal(cwd, "/home")) {
         copy_text(out, "~", out_size);
+        normalize_special_path(out, out_size);
+        return;
+    }
+
+    if (text_starts_with(cwd, "/home/")) {
+        uint32_t i = 6;
+        uint32_t j = i;
+        while (cwd[j] != '\0' && cwd[j] != '/') ++j;
+
+        if (cwd[j] == '\0') {
+            copy_text(out, "~", out_size);
+            normalize_special_path(out, out_size);
+            return;
+        }
+
+        // build "~" + remainder starting at j (including the slash)
+        if (out_size == 0) return;
+        out[0] = '~';
+        uint32_t pos = 1;
+        uint32_t k = j;
+        while (cwd[k] != '\0' && pos + 1 < out_size) {
+            out[pos++] = cwd[k++];
+        }
+        out[pos] = '\0';
         normalize_special_path(out, out_size);
         return;
     }
@@ -528,13 +1204,22 @@ void print_command_candidates(const char* prefix) {
             continue;
         }
 
-        kernel::serial::write(name);
-        kernel::serial::write(" ");
+        out(name);
+        out(" ");
+        any = true;
+    }
+
+    // include registered commands
+    for (uint32_t i = 0; i < g_cmd_count; ++i) {
+        const char* name = g_cmd_table[i].name;
+        if (name == nullptr || !text_starts_with(name, prefix)) continue;
+        out(name);
+        out(" ");
         any = true;
     }
 
     if (any) {
-        kernel::serial::write("\n");
+        out("\n");
     }
 }
 
@@ -596,12 +1281,12 @@ bool complete_command_token(char* line, uint32_t& pos) {
         if (common_len > prefix_len) {
             while (prefix_len < common_len && pos + 1 < kMaxLine) {
                 line[pos++] = first_match[prefix_len++];
-                kernel::serial::write_char(first_match[prefix_len - 1]);
+                out_char(first_match[prefix_len - 1]);
             }
             return true;
         }
 
-        kernel::serial::write("\n");
+        out("\n");
         print_command_candidates(prefix);
         return true;
     }
@@ -609,7 +1294,7 @@ bool complete_command_token(char* line, uint32_t& pos) {
     const uint32_t name_len = text_len(first_match);
     while (prefix_len < name_len && pos + 1 < kMaxLine) {
         line[pos++] = first_match[prefix_len++];
-        kernel::serial::write_char(first_match[prefix_len - 1]);
+        out_char(first_match[prefix_len - 1]);
     }
 
     return true;
@@ -621,11 +1306,10 @@ bool complete_path_token(char* line, uint32_t& pos, const char* cwd) {
         --start;
     }
 
-    if (start >= pos) {
-        return false;
-    }
+    if (start >= pos) return false;
 
-    char token[32] = {};
+    // token is the current word being completed (may include slashes)
+    char token[64] = {};
     uint32_t token_len = 0;
     while (start + token_len < pos && token_len + 1 < sizeof(token)) {
         token[token_len] = line[start + token_len];
@@ -633,56 +1317,73 @@ bool complete_path_token(char* line, uint32_t& pos, const char* cwd) {
     }
     token[token_len] = '\0';
 
-    char resolved[32] = {};
-    if (!resolve_path(cwd, token, resolved, sizeof(resolved))) {
-        return false;
-    }
+    // base is text after the last '/'
+    uint32_t base_start = 0;
+    for (uint32_t i = 0; i < token_len; ++i) if (token[i] == '/') base_start = i + 1;
+    const char* base = token + base_start;
+    const uint32_t base_len = text_len(base);
 
-    char parent[32] = {};
-    if (!get_parent_path(resolved, parent, sizeof(parent))) {
-        return false;
-    }
+    char resolved[128] = {};
+    if (!resolve_path(cwd, token, resolved, sizeof(resolved))) return false;
 
-    const uint32_t prefix_len = text_len(token);
-    const char* suggestion = nullptr;
+    char parent[128] = {};
+    if (!get_parent_path(resolved, parent, sizeof(parent))) return false;
+
+    kernel::fs::DirEntry entries[64] = {};
+    const int read_count = filesystem_ready() ? kernel::fs::g_fs->readdir(parent, entries, 64) : -1;
+    if (read_count < 0) return false;
+
+    const char* first_match = nullptr;
+    bool first_is_dir = false;
     uint32_t match_count = 0;
-    kernel::fs::DirEntry entries[32] = {};
-    const int entry_count = filesystem_ready() ? kernel::fs::g_fs->readdir(parent, entries, 32) : -1;
+    uint32_t common_len = 0;
 
-    if (entry_count < 0) {
-        return false;
-    }
-
-    for (int i = 0; i < entry_count; ++i) {
-        if (!entries[i].is_directory) {
-            continue;
-        }
-
-        if (prefix_len > 0 && !text_starts_with(entries[i].name, token)) {
-            continue;
-        }
+    for (int i = 0; i < read_count; ++i) {
+        const char* name = entries[i].name;
+        if (base_len > 0 && !text_starts_with(name, base)) continue;
 
         ++match_count;
-        if (suggestion == nullptr) {
-            suggestion = entries[i].name;
+        if (first_match == nullptr) {
+            first_match = name;
+            first_is_dir = entries[i].is_directory;
+            common_len = text_len(name);
+            continue;
         }
+
+        uint32_t shared = 0;
+        while (first_match[shared] != '\0' && name[shared] != '\0' && first_match[shared] == name[shared]) ++shared;
+        if (shared < common_len) common_len = shared;
     }
 
-    if (match_count == 0 || suggestion == nullptr) {
-        return false;
-    }
+    if (match_count == 0) return false;
 
-    if (match_count > 1) {
-        kernel::serial::write("\n");
-        for (int i = 0; i < entry_count; ++i) {
-            if (entries[i].is_directory && (prefix_len == 0 || text_starts_with(entries[i].name, token))) {
-                kernel::serial::write(entries[i].name);
-                kernel::serial::write(" ");
-            }
+    if (match_count == 1 && first_match != nullptr) {
+        // append remaining characters of the matched name
+        const uint32_t name_len = text_len(first_match);
+        for (uint32_t i = base_len; i < name_len && pos + 1 < kMaxLine; ++i) {
+            char ch = first_match[i];
+            line[pos++] = ch;
+            out_char(ch);
         }
-        kernel::serial::write("\n");
+
+        // if directory, append trailing '/'
+        if (first_is_dir && pos + 1 < kMaxLine) {
+            line[pos++] = '/';
+            out_char('/');
+        }
+
+        return true;
     }
 
+    // multiple matches: print suggestions
+    out("\n");
+    for (int i = 0; i < read_count; ++i) {
+        if (base_len > 0 && !text_starts_with(entries[i].name, base)) continue;
+        out(entries[i].name);
+        if (entries[i].is_directory) out("/");
+        out("  ");
+    }
+    out("\n");
     return true;
 }
 
@@ -718,14 +1419,15 @@ int split_args(char* line, char* argv[], int max_args) {
 void print_prompt(const char* cwd) {
     char prompt_path[32] = {};
     format_prompt_path(cwd, prompt_path, sizeof(prompt_path));
-    kernel::serial::write("root@wirth:");
-    kernel::serial::write(prompt_path);
-    kernel::serial::write("$ ");
+    out("\n");
+    out("root@wirth:");
+    out(prompt_path);
+    out("$ ");
 }
 
 void print_directory_listing(const char* path) {
     if (!filesystem_ready()) {
-        kernel::serial::write("fs unavailable\n");
+        out("fs unavailable\n");
         return;
     }
 
@@ -737,13 +1439,13 @@ void print_directory_listing(const char* path) {
     }
 
     if (count == 0) {
-        kernel::serial::write("\n");
+        out("\n");
         return;
     }
 
     for (int i = 0; i < count; ++i) {
-        kernel::serial::write(entries[i].name);
-        kernel::serial::write("\n");
+        out(entries[i].name);
+        out("\n");
     }
 }
 
@@ -752,24 +1454,37 @@ void execute_command(int argc, char* argv[], char* cwd) {
         return;
     }
 
+    CmdHandler reg = find_registered_command(argv[0]);
+
+    if (reg != nullptr) {
+        reg(argc, argv, cwd);
+        return;
+    }
+
     const char* command_name = canonical_command_name(argv[0]);
 
     if (command_name != nullptr && (text_equal(command_name, "clear") || text_equal(command_name, "cls") ||
         text_equal(command_name, "reset") || text_equal(command_name, "clean") || text_equal(command_name, "wipe") ||
         text_equal(command_name, "screen"))) {
+    
+        kernel::video::clear();
         kernel::serial::write("\x1b[2J\x1b[H");
+
         return;
     }
 
     if (command_name != nullptr && (text_equal(command_name, "pwd") || text_equal(command_name, "cwd") ||
         text_equal(command_name, "whereami") || text_equal(command_name, "here"))) {
-        kernel::serial::write(cwd);
-        kernel::serial::write("\n");
+
+        out(cwd);        
+        out("\n");
+        
         return;
     }
 
     if (command_name != nullptr && (text_equal(command_name, "cd") || text_equal(command_name, "chdir") ||
         text_equal(command_name, "changedir") || text_equal(command_name, "goto"))) {
+
         if (argc < 2) {
             copy_text(cwd, "/home", 32);
             return;
@@ -779,7 +1494,7 @@ void execute_command(int argc, char* argv[], char* cwd) {
         resolve_path(cwd, argv[1], resolved, sizeof(resolved));
 
         if (resolved[0] == '\0' || !directory_exists(resolved)) {
-            kernel::serial::write("cd: directory not found\n");
+            out("cd: directory not found\n");
             return;
         }
 
@@ -793,16 +1508,18 @@ void execute_command(int argc, char* argv[], char* cwd) {
         text_equal(command_name, "contents") || text_equal(command_name, "browse") ||
         text_equal(command_name, "showdir") || text_equal(command_name, "showfiles") ||
         text_equal(command_name, "list-directory"))) {
+
         char path[32] = {};
 
         if (argc < 2) {
             copy_text(path, cwd, sizeof(path));
+
         } else {
             resolve_path(cwd, argv[1], path, sizeof(path));
         }
 
         if (!directory_exists(path)) {
-            kernel::serial::write("ld: directory not found\n");
+            out("ld: directory not found\n");
             return;
         }
 
@@ -813,8 +1530,9 @@ void execute_command(int argc, char* argv[], char* cwd) {
     if (command_name != nullptr && (text_equal(command_name, "md") || text_equal(command_name, "mkdir") ||
         text_equal(command_name, "mk") || text_equal(command_name, "makedir") || text_equal(command_name, "newdir") ||
         text_equal(command_name, "createdir") || text_equal(command_name, "create-dir"))) {
+
         if (argc < 2) {
-            kernel::serial::write("md <dir>\n");
+            out("md <dir>\n");
             return;
         }
 
@@ -822,7 +1540,7 @@ void execute_command(int argc, char* argv[], char* cwd) {
         resolve_path(cwd, argv[1], path, sizeof(path));
 
         if (path[0] == '\0') {
-            kernel::serial::write("md: invalid path\n");
+            out("md: invalid path\n");
             return;
         }
 
@@ -831,24 +1549,229 @@ void execute_command(int argc, char* argv[], char* cwd) {
         }
 
         if (directory_exists(path)) {
-            kernel::serial::write("md: directory already exists\n");
+            out("md: directory already exists\n");
             return;
         }
 
-        kernel::serial::write("md: could not create directory\n");
+        out("md: could not create directory\n");
+        return;
+    }
+
+    if (command_name != nullptr && text_equal(command_name, "reboot")) {
+        out("rebooting...\n");
+
+        if (kernel::storage_ready()) {
+            out("persisting rootfs...\n");
+            kernel::storage_snapshot_save("rootfs");
+        }
+
+        kernel::arch::x86::io::outb(0x64, 0xFE);
+
+        for (;;){ asm volatile("cli; hlt"); }
+    }
+
+    if (command_name != nullptr && text_equal(command_name, "poweroff")) {
+        out("powering off...\n");
+
+        if (kernel::storage_ready()) {
+            out("persisting rootfs...\n");
+            kernel::storage_snapshot_save("rootfs");
+        }
+
+        asm volatile("cli");
+        for (;;) asm volatile("hlt");
+
+        return;
+    }
+
+    if (command_name != nullptr && text_equal(command_name, "lsblk")) {
+        show_lspci();
+        return;
+    }
+
+    if (command_name != nullptr && text_equal(command_name, "lscpu")) {
+        show_lscpu();
+        return;
+    }
+
+    if (command_name != nullptr && text_equal(command_name, "lspci")) {
+        show_lspci();
+        return;
+    }
+
+    if (command_name != nullptr && text_equal(command_name, "tree")) {
+        char path[64] = {};
+        
+        if (argc < 2) copy_text(path, cwd, sizeof(path)); else resolve_path(cwd, argv[1], path, sizeof(path));
+        
+        out(path);
+        out("\n");
+        print_tree_recursive(path, 0);
+        
+        return;
+    }
+
+    if (command_name != nullptr && text_equal(command_name, "cp")) {
+    
+        if (argc < 3) { out("cp <src> <dst>\n"); return; }
+        char src[64] = {};
+        char dst[64] = {};
+    
+        resolve_path(cwd, argv[1], src, sizeof(src));
+        resolve_path(cwd, argv[2], dst, sizeof(dst));
+    
+        if (text_equal(dst, "/") ) { out("cp: invalid destination\n"); return; }
+    
+        if (directory_exists(dst)) {
+            char final_dst[128] = {};
+            uint32_t pos = 0; uint32_t j = 0;
+    
+            while (dst[j] != '\0' && pos + 2 < sizeof(final_dst)) final_dst[pos++] = dst[j++];
+    
+            if (final_dst[pos - 1] != '/') { if (pos + 1 < sizeof(final_dst)) final_dst[pos++] = '/'; }
+    
+            const char* base = basename_of(src);
+            j = 0; 
+            
+            while (base[j] != '\0' && pos + 1 < sizeof(final_dst)) final_dst[pos++] = base[j++];
+            
+            final_dst[pos] = '\0';
+            
+            if (!fs_copy_file(src, final_dst)) out("cp: failed\n");
+            
+            return;
+        }
+        
+        if (!fs_copy_file(src, dst)) out("cp: failed\n");
+        
+        return;
+    }
+
+    if (command_name != nullptr && text_equal(command_name, "mv")) {
+        
+        if (argc < 3) { out("mv <src> <dst>\n"); return; }
+        
+        char src[64] = {};
+        char dst[64] = {};
+        
+        resolve_path(cwd, argv[1], src, sizeof(src));
+        resolve_path(cwd, argv[2], dst, sizeof(dst));
+        
+        if (directory_exists(dst)) {
+            char final_dst[128] = {};
+            uint32_t pos = 0; uint32_t j = 0;
+        
+            while (dst[j] != '\0' && pos + 2 < sizeof(final_dst)) final_dst[pos++] = dst[j++];
+        
+            if (final_dst[pos - 1] != '/') { if (pos + 1 < sizeof(final_dst)) final_dst[pos++] = '/'; }
+        
+            const char* base = basename_of(src);
+            j = 0; 
+            
+            while (base[j] != '\0' && pos + 1 < sizeof(final_dst)) final_dst[pos++] = base[j++];
+            
+            final_dst[pos] = '\0';
+            
+            if (!fs_move_file(src, final_dst)) out("mv: failed\n");
+            
+            return;
+        }
+        
+        if (!fs_move_file(src, dst)) out("mv: failed\n");
+        return;
+    }
+
+    if (command_name != nullptr && text_equal(command_name, "rm")) {
+        if (argc < 2) { out("rm <path>\n"); return; }
+        
+        char path[64] = {};
+        
+        resolve_path(cwd, argv[1], path, sizeof(path));
+        
+        if (fs_remove_path(path)) return;
+        
+        out("rm: failed\n");
+        
+        return;
+    }
+
+    if (command_name != nullptr && text_equal(command_name, "rmdir")) {
+        
+        if (argc < 2) { out("rmdir <dir>\n"); return; }
+        
+        char path[64] = {};
+        
+        resolve_path(cwd, argv[1], path, sizeof(path));
+        
+        if (kernel::fs::g_fs->rmdir(path) == 0) return;
+        
+        out("rmdir: failed\n");
+        
+        return;
+    }
+
+    if (command_name != nullptr && text_equal(command_name, "cat")) {
+        
+        if (argc < 2) { out("cat <file>\n"); return; }
+        
+        char path[64] = {};
+        
+        resolve_path(cwd, argv[1], path, sizeof(path));
+        
+        print_file(path);
+        
+        out("\n");
+        
+        return;
+    }
+    
+    if (command_name != nullptr && text_equal(command_name, "touch")) {
+        
+        if (argc < 2) { out("touch <file>\n"); return; }
+        
+        char path[64] = {};
+        
+        resolve_path(cwd, argv[1], path, sizeof(path));
+        
+        int fd = kernel::fs::g_fs->open(path, kernel::fs::kOpenWrite | kernel::fs::kOpenCreate);
+        
+        if (fd < 0) { out("touch: failed\n"); return; }
+        
+        kernel::fs::g_fs->close(fd);
+        
+        return;
+    }
+
+    if (command_name != nullptr && text_equal(command_name, "stat")) {
+        
+        if (argc < 2) { out("stat <path>\n"); return; }
+        
+        char path[64] = {};
+        
+        resolve_path(cwd, argv[1], path, sizeof(path));
+        
+        if (directory_exists(path)) { out("directory\n"); return; }
+        
+        int fd = kernel::fs::g_fs->open(path, kernel::fs::kOpenRead);
+        
+        if (fd >= 0) { out("file\n"); kernel::fs::g_fs->close(fd); return; }
+        
+        out("not found\n");
+        
         return;
     }
 
     if (command_name != nullptr && (text_equal(command_name, "help") || text_equal(command_name, "?") ||
         text_equal(command_name, "h") || text_equal(command_name, "commands") || text_equal(command_name, "cmds") ||
         text_equal(command_name, "apropos") || text_equal(command_name, "usage"))) {
-        kernel::serial::write("commands: ld, md, cd, pwd, clear, plus numbered families like ld12/md7\n");
+        
+        out("commands: ld, md, cd, pwd, clear, plus numbered families like ld12/md7\n");
         return;
     }
 
-    kernel::serial::write("unknown command: ");
-    kernel::serial::write(argv[0]);
-    kernel::serial::write("\n");
+    out("unknown command: ");
+    out(argv[0]);
+    out("\n");
 }
 
 bool keyboard_read_char_nonblocking(char* out_char) {
@@ -867,15 +1790,9 @@ bool keyboard_read_char_nonblocking(char* out_char) {
     }
 
     switch (scancode) {
-        case 0x1C:
-            *out_char = '\n';
-            return true;
-        case 0x0E:
-            *out_char = '\b';
-            return true;
-        case 0x39:
-            *out_char = ' ';
-            return true;
+        case 0x1C: *out_char = '\n'; return true;
+        case 0x0E: *out_char = '\b'; return true;
+        case 0x39: *out_char = ' '; return true;
         case 0x02: *out_char = '1'; return true;
         case 0x03: *out_char = '2'; return true;
         case 0x04: *out_char = '3'; return true;
@@ -933,34 +1850,108 @@ void console_loop(uint32_t multiboot_info_addr) {
     char cwd[32] = {};
     uint32_t pos = 0;
 
-    kernel::fs::g_fs = &g_ramfs;
-    g_ramfs.reset();
-
-    // Ensure a minimal kernel-root filesystem layout exists as a reliable fallback.
-    if (kernel::fs::g_fs != nullptr) {
-        kernel::fs::g_fs->mkdir("/home");
-        kernel::fs::g_fs->mkdir("/root");
-        kernel::fs::g_fs->mkdir("/user");
-        kernel::fs::g_fs->mkdir("/temp");
+    if (g_ramfs == nullptr) {
+        g_ramfs = new kernel::fs::RamFs();
     }
+
+    kernel::storage_init();
+    kernel::fs::g_fs = g_ramfs;
+    (void)g_ramfs->init();
+
+    kernel::storage_restore_packages();
+
+    register_default_commands();
 
     RootfsModuleContext rootfs_ctx = {};
     kernel::boot::multiboot2::visit_modules(multiboot_info_addr, rootfs_module_visitor, &rootfs_ctx);
 
-    if (rootfs_ctx.loaded) {
-        kernel::serial::write("[wirth/x86_64] rootfs seed loaded\n");
-    } else {
-        kernel::serial::write("[wirth/x86_64] rootfs seed missing, trying embedded seed\n");
-        if (kEmbeddedRootfsSeedSize > 0) {
-            load_rootfs_seed(kEmbeddedRootfsSeed, kEmbeddedRootfsSeedSize);
-            kernel::serial::write("[wirth/x86_64] embedded rootfs seed applied\n");
-        } else {
-            kernel::serial::write("[wirth/x86_64] no embedded rootfs seed\n");
+    if (!rootfs_ctx.loaded) {
+        kernel::serial::write("[wirth] xhci probe\n");
+        const bool xhci_ready = kernel::xhci::init();
+        kernel::serial::write(xhci_ready ? "[wirth] xhci ready\n" : "[wirth] xhci unavailable\n");
+
+        if (xhci_ready) {
+            kernel::xhci::start_poll_task();
+        }
+
+        kernel::serial::write("[wirth] usbms probe\n");
+        const bool usbms_ready = kernel::usbms::init();
+        kernel::serial::write(usbms_ready ? "[wirth] usbms ready\n" : "[wirth] usbms unavailable\n");
+
+        if (!kernel::efifs::try_load_rootfs_seed_from_esp()) {
+            kernel::serial::write("[efifs]: failed to load ROOTFS.SEED from ESP\n");
+
+            const char* seed = kEmbeddedRootfsSeed;
+            const unsigned seed_sz = kEmbeddedRootfsSeedSize;
+
+            char linebuf[128];
+            uint32_t line_len = 0;
+
+            for (unsigned i = 0; i < seed_sz; ++i) {
+                char ch = seed[i];
+
+                if (ch == '\r' || ch == '\n') {
+
+                    if (line_len > 0) {
+                        linebuf[line_len] = '\0';
+                        char* cursor = linebuf;
+                    
+                        while (*cursor == ' ' || *cursor == '\t') 
+                            ++cursor;
+                    
+                        if (*cursor != '\0' && *cursor != '#') {
+                            char* cmd = cursor;
+                    
+                            while (*cursor != '\0' && *cursor != ' ' && *cursor != '\t') 
+                                ++cursor;
+                    
+                            if (*cursor != '\0') *cursor++ = '\0';
+                    
+                            while (*cursor == ' ' || *cursor == '\t') 
+                                ++cursor;
+                    
+                            if (*cmd == 'm' && cmd[1] == 'd') {
+                                kernel::fs::g_fs->mkdir(cursor);
+                            }
+                        }
+                    
+                        line_len = 0;
+                    }
+                    
+                    continue;
+                }
+
+                if (line_len + 1 < sizeof(linebuf)) linebuf[line_len++] = ch;
+            }
+
+            if (line_len > 0) {
+                linebuf[line_len] = '\0';
+                char* cursor = linebuf;
+                
+                while (*cursor == ' ' || *cursor == '\t') 
+                    ++cursor;
+                
+                if (*cursor != '\0' && *cursor != '#') {
+                    char* cmd = cursor;
+                
+                    while (*cursor != '\0' && *cursor != ' ' && *cursor != '\t') 
+                        ++cursor;
+                
+                    if (*cursor != '\0') *cursor++ = '\0';
+                
+                    while (*cursor == ' ' || *cursor == '\t') 
+                        ++cursor;
+                
+                    if (*cmd == 'm' && cmd[1] == 'd') {
+                        kernel::fs::g_fs->mkdir(cursor);
+                    }
+                }
+            }
         }
     }
+    copy_text(cwd, "/home/root", sizeof(cwd));
 
-    copy_text(cwd, "/home", sizeof(cwd));
-
+    kernel::serial::write("Hello from wirth!\n");
     print_prompt(cwd);
 
     while (true) {
@@ -974,15 +1965,16 @@ void console_loop(uint32_t multiboot_info_addr) {
         }
 
         if (c == '\r' || c == '\n') {
-            kernel::serial::write("\n");
             line[pos] = '\0';
 
             char* argv[kMaxArgs] = {};
             const int argc = split_args(line, argv, static_cast<int>(kMaxArgs));
+                
             execute_command(argc, argv, cwd);
 
             pos = 0;
             print_prompt(cwd);
+
             continue;
         }
 
@@ -1039,27 +2031,28 @@ extern "C" void kernel_main64(uint32_t multiboot_magic, uint32_t multiboot_info_
     constexpr uint32_t kExpectedMagic = 0x36D76289;
 
     kernel::serial::init();
-    kernel::serial::write("[wirth/x86_64] kernel boot\n");
-    kernel::serial::write("[wirth/x86_64] multiboot magic: 0x");
+    kernel::serial::write("[wirth] kernel boot\n");
+    kernel::serial::write("[wirth] multiboot magic: 0x");
     kernel::serial::write_hex(multiboot_magic);
     kernel::serial::write("\n");
-    kernel::serial::write("[wirth/x86_64] mbi addr: 0x");
+    kernel::serial::write("[wirth] mbi addr: 0x");
     kernel::serial::write_hex(multiboot_info_addr);
     kernel::serial::write("\n");
 
     if (multiboot_magic != kExpectedMagic) {
-        kernel::serial::write("[wirth/x86_64] invalid multiboot magic\n");
+        kernel::serial::write("[wirth] invalid multiboot magic\n");
         
     } else {
-        kernel::serial::write("[wirth/x86_64] bootstrap OK\n");
+        kernel::serial::write("[wirth] bootstrap OK\n");
     }
 
     kernel::boot::multiboot2::log_memory_map(multiboot_info_addr);
     kernel::boot::multiboot2::log_modules(multiboot_info_addr);
+
     kernel::arch::x86_64::gdt::init();
     kernel::arch::x86_64::interrupts::init();
-    kernel::arch::x86_64::interrupts::enable();
-    kernel::serial::write("[wirth/x86_64] scaffold live\n");
 
+    kernel::arch::x86_64::interrupts::enable();
+    
     console_loop(multiboot_info_addr);
 }

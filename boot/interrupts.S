@@ -2,6 +2,21 @@
 .global isr_unhandled_stub
 .global isr_breakpoint_stub
 .global irq0_stub
+.global irq1_stub
+.global irq2_stub
+.global irq3_stub
+.global irq4_stub
+.global irq5_stub
+.global irq6_stub
+.global irq7_stub
+.global irq8_stub
+.global irq9_stub
+.global irq10_stub
+.global irq11_stub
+.global irq12_stub
+.global irq13_stub
+.global irq14_stub
+.global irq15_stub
 .global syscall_stub
 .global isr_gp_stub
 .global isr_pf_stub
@@ -32,6 +47,171 @@ irq0_stub:
     push %esp
     call irq0_handler
     add $4, %esp
+    mov %eax, %esp
+    popa
+    iret
+
+irq1_stub:
+    pusha
+    cld
+    push $33
+    push %esp
+    call irq_generic_handler
+    add $8, %esp
+    mov %eax, %esp
+    popa
+    iret
+
+irq2_stub:
+    pusha
+    cld
+    push $34
+    push %esp
+    call irq_generic_handler
+    add $8, %esp
+    mov %eax, %esp
+    popa
+    iret
+
+irq3_stub:
+    pusha
+    cld
+    push $35
+    push %esp
+    call irq_generic_handler
+    add $8, %esp
+    mov %eax, %esp
+    popa
+    iret
+
+irq4_stub:
+    pusha
+    cld
+    push $36
+    push %esp
+    call irq_generic_handler
+    add $8, %esp
+    mov %eax, %esp
+    popa
+    iret
+
+irq5_stub:
+    pusha
+    cld
+    push $37
+    push %esp
+    call irq_generic_handler
+    add $8, %esp
+    mov %eax, %esp
+    popa
+    iret
+
+irq6_stub:
+    pusha
+    cld
+    push $38
+    push %esp
+    call irq_generic_handler
+    add $8, %esp
+    mov %eax, %esp
+    popa
+    iret
+
+irq7_stub:
+    pusha
+    cld
+    push $39
+    push %esp
+    call irq_generic_handler
+    add $8, %esp
+    mov %eax, %esp
+    popa
+    iret
+
+irq8_stub:
+    pusha
+    cld
+    push $40
+    push %esp
+    call irq_generic_handler
+    add $8, %esp
+    mov %eax, %esp
+    popa
+    iret
+
+irq9_stub:
+    pusha
+    cld
+    push $41
+    push %esp
+    call irq_generic_handler
+    add $8, %esp
+    mov %eax, %esp
+    popa
+    iret
+
+irq10_stub:
+    pusha
+    cld
+    push $42
+    push %esp
+    call irq_generic_handler
+    add $8, %esp
+    mov %eax, %esp
+    popa
+    iret
+
+irq11_stub:
+    pusha
+    cld
+    push $43
+    push %esp
+    call irq_generic_handler
+    add $8, %esp
+    mov %eax, %esp
+    popa
+    iret
+
+irq12_stub:
+    pusha
+    cld
+    push $44
+    push %esp
+    call irq_generic_handler
+    add $8, %esp
+    mov %eax, %esp
+    popa
+    iret
+
+irq13_stub:
+    pusha
+    cld
+    push $45
+    push %esp
+    call irq_generic_handler
+    add $8, %esp
+    mov %eax, %esp
+    popa
+    iret
+
+irq14_stub:
+    pusha
+    cld
+    push $46
+    push %esp
+    call irq_generic_handler
+    add $8, %esp
+    mov %eax, %esp
+    popa
+    iret
+
+irq15_stub:
+    pusha
+    cld
+    push $47
+    push %esp
+    call irq_generic_handler
+    add $8, %esp
     mov %eax, %esp
     popa
     iret

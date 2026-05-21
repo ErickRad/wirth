@@ -11,7 +11,6 @@ uint64_t g_ticks = 0;
 namespace kernel::arch::x86_64::interrupts {
 
 void init() {
-    kernel::serial::write("[wirth/x86_64] interrupts scaffold init\n");
 }
 
 void enable() {
