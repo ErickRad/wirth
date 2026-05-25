@@ -74,12 +74,12 @@ Isso remove dependência direta de `mtools` e mantém um pipeline estável no ho
   - `kGetPid`
   - `kGetTid`
   - `kProcCount`
-  - `kMkdir`
+  - `kmd`
   - `kGetUid`
   - `kGetGid`
 - `sys_sleep` integrado ao scheduler com estado de sleep/wakeup.
 - `sys_write` agora aceita `stdout/stderr` e FDs de arquivo do ramfs.
-- Validação de ponteiros de userland (`kernel/user_safety.*`) aplicada em `write/open/read/mkdir`
+- Validação de ponteiros de userland (`kernel/user_safety.*`) aplicada em `write/open/read/md`
   quando a syscall vem de task ring3.
 
 ## Processos/threads e sincronização
@@ -99,7 +99,7 @@ Isso remove dependência direta de `mtools` e mantém um pipeline estável no ho
 - Arquivo de teste montado no boot: `/test.txt`.
 - Caminho validado no boot via syscalls: `open -> read -> close`.
 - Suporte a diretórios no ramfs com caminhos absolutos normalizados (`/dir/sub/file`).
-- Nova syscall `kMkdir` para criação de diretórios.
+- Nova syscall `kmd` para criação de diretórios.
 - Fluxo validado no boot: criação de `/bin`, criação/escrita/leitura de `/bin/note.txt`.
 - Rootfs inicial com identidade root e home: `/root`, `/home/root`, `/etc/passwd`, `/root/.profile`.
 - Árvores padrão de usuário criadas no boot em `/root` e `/home/root`:
@@ -239,7 +239,7 @@ Total atual: **186 comandos/aliases**.
 
 Comandos-família implementados:
 - Navegação/listagem: `ls`, `ld`, `dir`, `cd`, `pwd`, `tree`
-- Diretórios/arquivos: `mkdir/md`, `rmdir/rd`, `touch`, `rm/unlink`, `cp`, `mv`
+- Diretórios/arquivos: `md/md`, `rd/rd`, `touch`, `rm/unlink`, `cp`, `mv`
 - Leitura/inspeção: `cat/print`, `head`, `tail`, `wc`, `cmp`, `stat`
 - Ambiente/sistema: `whoami`, `id`, `env`, `uname`
 - Utilitários: `echo`, `clear`, `help`, `halt`
@@ -253,12 +253,12 @@ Exemplos de aliases adicionais (entre os 132): `ll`, `la`, `listdir`, `type`, `m
 
 No kernel/VFS também foram adicionados:
 - `readdir(path, entries, max_entries)`
-- `rmdir(path)`
+- `rd(path)`
 - `unlink(path)`
 
 e syscalls:
 - `kReaddir = 13`
-- `kRmdir = 14`
+- `krd = 14`
 - `kUnlink = 15`
 
 ## 10. Empacotar em pendrive (próximo passo prático)

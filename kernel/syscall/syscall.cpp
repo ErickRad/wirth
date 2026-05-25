@@ -134,7 +134,7 @@ uint32_t sys_getgid() {
     return kernel::task::scheduler::current_group_id();
 }
 
-uint32_t sys_mkdir(uint32_t path_ptr) {
+uint32_t sys_md(uint32_t path_ptr) {
     if (kernel::fs::g_fs == nullptr || path_ptr == 0) {
         return kErrorInvalidSyscall;
     }
@@ -145,7 +145,7 @@ uint32_t sys_mkdir(uint32_t path_ptr) {
     }
 
     const char* path = reinterpret_cast<const char*>(path_ptr);
-    const int result = kernel::fs::g_fs->mkdir(path);
+    const int result = kernel::fs::g_fs->md(path);
 
     return (result < 0) ? kErrorInvalidSyscall : 0;
 }
@@ -182,7 +182,7 @@ uint32_t sys_readdir(uint32_t path_ptr, uint32_t entries_ptr, uint32_t max_entri
     return (n < 0) ? kErrorInvalidSyscall : static_cast<uint32_t>(n);
 }
 
-uint32_t sys_rmdir(uint32_t path_ptr) {
+uint32_t sys_rd(uint32_t path_ptr) {
     if (kernel::fs::g_fs == nullptr || path_ptr == 0) {
         return kErrorInvalidSyscall;
     }
@@ -193,7 +193,7 @@ uint32_t sys_rmdir(uint32_t path_ptr) {
     }
 
     const char* path = reinterpret_cast<const char*>(path_ptr);
-    const int result = kernel::fs::g_fs->rmdir(path);
+    const int result = kernel::fs::g_fs->rd(path);
 
     return (result < 0) ? kErrorInvalidSyscall : 0;
 }
@@ -245,8 +245,8 @@ extern "C" uint32_t syscall_dispatch(uint32_t number, uint32_t arg0, uint32_t ar
         case kernel::syscall::kProcCount:
             return sys_proc_count();
 
-        case kernel::syscall::kMkdir:
-            return sys_mkdir(arg0);
+        case kernel::syscall::kMd:
+            return sys_md(arg0);
 
         case kernel::syscall::kGetUid:
             return sys_getuid();
@@ -257,8 +257,8 @@ extern "C" uint32_t syscall_dispatch(uint32_t number, uint32_t arg0, uint32_t ar
         case kernel::syscall::kReaddir:
             return sys_readdir(arg0, arg1, arg2);
 
-        case kernel::syscall::kRmdir:
-            return sys_rmdir(arg0);
+        case kernel::syscall::kRd:
+            return sys_rd(arg0);
 
         case kernel::syscall::kUnlink:
             return sys_unlink(arg0);

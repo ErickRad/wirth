@@ -2,6 +2,7 @@
 #include <array>
 #include <cctype>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -15,9 +16,13 @@ constexpr uint32_t kSectorsPerCluster = 8;  // 4 KiB clusters
 constexpr uint32_t kReservedSectors = 1;
 constexpr uint32_t kNumFats = 2;
 constexpr uint32_t kRootEntryCount = 512;
-constexpr uint32_t kDefaultSizeMiB = 31;
+constexpr uint32_t kBootPartitionMiB = 32;
+constexpr uint32_t kDefaultSizeMiB = 128;
+constexpr uint32_t kPartitionAlignmentSectors = 2048;
 constexpr uint32_t kMediaDescriptor = 0xF8;
 constexpr uint8_t kEndOfChain = 0xFF;
+constexpr uint8_t kMbrPartitionTypeEfi = 0xEF;
+constexpr uint8_t kMbrPartitionTypeLinux = 0x83;
 
 constexpr uint16_t kFatEoc = 0xFFFF;
 constexpr uint16_t kFatFirstDataCluster = 2;
@@ -30,6 +35,13 @@ struct Options {
     std::string grubCfgPath = "boot/grub/grub.cfg";
     std::string outputPath;
     uint32_t sizeMiB = kDefaultSizeMiB;
+};
+
+struct Partition {
+    uint64_t startSector = 0;
+    uint64_t sectorCount = 0;
+    uint8_t type = 0;
+    bool bootable = false;
 };
 
 void write_le16(uint8_t* dst, uint16_t value) {
@@ -70,6 +82,118 @@ bool read_file(const std::string& path, std::vector<uint8_t>& out) {
     }
 
     return true;
+}
+
+bool write_file(const std::filesystem::path& path, const std::vector<uint8_t>& data) {
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+
+    if (!file) {
+        return false;
+    }
+
+    if (!data.empty()) {
+        file.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+    }
+
+    return static_cast<bool>(file);
+}
+
+std::string shell_quote(const std::filesystem::path& path) {
+    const std::string raw = path.string();
+    std::string quoted = "'";
+
+    for (char ch : raw) {
+        if (ch == '\'') {
+            quoted += "'\\''";
+        } else {
+            quoted += ch;
+        }
+    }
+
+    quoted += "'";
+    return quoted;
+}
+
+bool run_command(const std::string& command) {
+    const int status = std::system(command.c_str());
+    return status == 0;
+}
+
+void write_mbr(std::fstream& image, const Partition& boot, const Partition& persistent) {
+    std::array<uint8_t, kBytesPerSector> sector{};
+
+    auto write_partition = [&](size_t index, const Partition& part) {
+        const size_t offset = 446 + index * 16;
+
+        sector[offset + 0] = part.bootable ? 0x80u : 0x00u;
+        sector[offset + 1] = 0x01u;
+        sector[offset + 2] = 0x01u;
+        sector[offset + 3] = 0x00u;
+        sector[offset + 4] = part.type;
+        sector[offset + 5] = 0xFEu;
+        sector[offset + 6] = 0xFFu;
+        sector[offset + 7] = 0xFFu;
+        write_le32(sector.data() + offset + 8, static_cast<uint32_t>(part.startSector));
+        write_le32(sector.data() + offset + 12, static_cast<uint32_t>(part.sectorCount));
+    };
+
+    write_partition(0, boot);
+    write_partition(1, persistent);
+
+    sector[510] = 0x55;
+    sector[511] = 0xAA;
+
+    image.seekp(0, std::ios::beg);
+    image.write(reinterpret_cast<const char*>(sector.data()), sector.size());
+}
+
+void ensure_directory_tree(const std::filesystem::path& root) {
+    const std::vector<std::filesystem::path> dirs = {
+        root / "boot",
+        root / "home",
+        root / "home/root",
+        root / "home/user",
+        root / "root",
+        root / "user",
+        root / "user/binaries",
+        root / "user/shared",
+        root / "user/shared/docs",
+        root / "user/shared/docs/wirth",
+        root / "temp",
+        root / "vars",
+        root / "vars/libs",
+        root / "vars/libs/wirth",
+        root / "vars/libs/wirth/pkgdb",
+        root / "vars/cache",
+        root / "vars/tmp",
+        root / "etc",
+        root / "etc/apt",
+        root / "etc/apt/sources.list.d",
+        root / "optional",
+        root / "optional/demo",
+    };
+
+    for (const auto& dir : dirs) {
+        std::filesystem::create_directories(dir);
+    }
+}
+
+bool build_ext4_image(const std::filesystem::path& stageRoot,
+                      const std::filesystem::path& imagePath,
+                      uint32_t sizeMiB) {
+    const std::string command = "mkfs.ext4 -q -F -d " + shell_quote(stageRoot) + " " + shell_quote(imagePath);
+
+    if (!write_file(imagePath, {})) {
+        return false;
+    }
+
+    const std::string truncate_command = "truncate -s " + std::to_string(sizeMiB) + "M " + shell_quote(imagePath);
+
+    if (!run_command(truncate_command)) {
+        return false;
+    }
+
+    return run_command(command);
 }
 
 Options parse_args(int argc, char* argv[]) {
@@ -217,7 +341,7 @@ void write_dot_entry(uint8_t* dst, bool parent, uint16_t cluster) {
     write_le16(dst + 26, cluster);
 }
 
-void write_boot_sector(std::fstream& image, const Layout& layout) {
+void write_boot_sector(std::fstream& image, const Layout& layout, uint64_t baseOffsetBytes) {
     std::array<uint8_t, kBytesPerSector> sector{};
     
     sector[0] = 0xEB;
@@ -261,11 +385,11 @@ void write_boot_sector(std::fstream& image, const Layout& layout) {
     sector[510] = 0x55;
     sector[511] = 0xAA;
 
-    image.seekp(0, std::ios::beg);
+    image.seekp(static_cast<std::streamoff>(baseOffsetBytes), std::ios::beg);
     image.write(reinterpret_cast<const char*>(sector.data()), sector.size());
 }
 
-void write_fat_tables(std::fstream& image, const Layout& layout, uint32_t efiClusters,
+void write_fat_tables(std::fstream& image, const Layout& layout, uint64_t baseOffsetBytes, uint32_t efiClusters,
                       uint32_t kernel32Clusters, uint32_t kernel64Clusters, uint32_t rootfsClusters, uint32_t grubCfgClusters,
                       bool includeKernelFiles) {
     
@@ -321,12 +445,12 @@ void write_fat_tables(std::fstream& image, const Layout& layout, uint32_t efiClu
     for (uint32_t copy = 0; copy < kNumFats; ++copy) {
         const uint32_t sector = layout.firstFatSector + copy * layout.sectorsPerFat;
 
-        image.seekp(static_cast<std::streamoff>(sector) * kBytesPerSector, std::ios::beg);
+        image.seekp(static_cast<std::streamoff>(baseOffsetBytes + static_cast<uint64_t>(sector) * kBytesPerSector), std::ios::beg);
         image.write(reinterpret_cast<const char*>(fat.data()), static_cast<std::streamsize>(fat.size()));
     }
 }
 
-void write_root_directory(std::fstream& image, const Layout& layout, bool includeKernelFiles) {
+    void write_root_directory(std::fstream& image, const Layout& layout, uint64_t baseOffsetBytes, bool includeKernelFiles) {
     std::vector<uint8_t> root(root_dir_sectors() * kBytesPerSector, 0);
 
     write_volume_label_entry(root.data() + 0, "wirth ESP");
@@ -336,11 +460,11 @@ void write_root_directory(std::fstream& image, const Layout& layout, bool includ
         write_dir_entry(root.data() + 64, "BOOT", "", 0x10, 4, 0);
     }
 
-    image.seekp(static_cast<std::streamoff>(layout.rootDirSector) * kBytesPerSector, std::ios::beg);
+    image.seekp(static_cast<std::streamoff>(baseOffsetBytes + static_cast<uint64_t>(layout.rootDirSector) * kBytesPerSector), std::ios::beg);
     image.write(reinterpret_cast<const char*>(root.data()), static_cast<std::streamsize>(root.size()));
 }
 
-void write_directory_clusters(std::fstream& image, const Layout& layout, 
+void write_directory_clusters(std::fstream& image, const Layout& layout, uint64_t baseOffsetBytes,
     uint32_t efiFileSize, uint32_t kernel32Size, uint32_t kernel64Size, uint32_t rootfsSize, uint32_t grubCfgSize,
     uint32_t efiStartCluster, uint32_t kernel32StartCluster, uint32_t kernel64StartCluster, uint32_t rootfsStartCluster, uint32_t grubCfgStartCluster,
     bool includeKernelFiles) {
@@ -363,10 +487,10 @@ void write_directory_clusters(std::fstream& image, const Layout& layout,
     write_dir_entry(bootCluster.data() + 64, "BOOTX64", "EFI", 0x20,
                     static_cast<uint16_t>(efiStartCluster), efiFileSize);
 
-    image.seekp(static_cast<std::streamoff>(cluster_to_sector(layout, efiDirCluster)) * kBytesPerSector, std::ios::beg);
+    image.seekp(static_cast<std::streamoff>(baseOffsetBytes + static_cast<uint64_t>(cluster_to_sector(layout, efiDirCluster)) * kBytesPerSector), std::ios::beg);
     image.write(reinterpret_cast<const char*>(efiCluster.data()), static_cast<std::streamsize>(efiCluster.size()));
 
-    image.seekp(static_cast<std::streamoff>(cluster_to_sector(layout, bootDirCluster)) * kBytesPerSector, std::ios::beg);
+    image.seekp(static_cast<std::streamoff>(baseOffsetBytes + static_cast<uint64_t>(cluster_to_sector(layout, bootDirCluster)) * kBytesPerSector), std::ios::beg);
     image.write(reinterpret_cast<const char*>(bootCluster.data()), static_cast<std::streamsize>(bootCluster.size()));
 
     if (includeKernelFiles) {
@@ -385,21 +509,23 @@ void write_directory_clusters(std::fstream& image, const Layout& layout,
         write_dir_entry(rootBootCluster.data() + 96, "KERNEL64", "ELF", 0x20,
                         static_cast<uint16_t>(kernel64StartCluster), kernel64Size);
 
-        write_dir_entry(rootBootCluster.data() + 128, "ROOTFS", "SEED", 0x20,
-                        static_cast<uint16_t>(rootfsStartCluster), rootfsSize);
-        
+        if (rootfsSize > 0) {
+            write_dir_entry(rootBootCluster.data() + 128, "ROOTFS", "SEED", 0x20,
+                            static_cast<uint16_t>(rootfsStartCluster), rootfsSize);
+        }
+
         write_dir_entry(rootBootCluster.data() + 160, "GRUB", "", 0x10, grubCfgCluster, 0);
         
         write_dir_entry(grubCluster.data() + 64, "GRUB", "CFG", 0x20,
                         static_cast<uint16_t>(grubCfgStartCluster), grubCfgSize);
 
-        image.seekp(static_cast<std::streamoff>(cluster_to_sector(layout, rootBootDirCluster)) * kBytesPerSector,
+        image.seekp(static_cast<std::streamoff>(baseOffsetBytes + static_cast<uint64_t>(cluster_to_sector(layout, rootBootDirCluster)) * kBytesPerSector),
                     std::ios::beg);
 
         image.write(reinterpret_cast<const char*>(rootBootCluster.data()),
                     static_cast<std::streamsize>(rootBootCluster.size()));
 
-        image.seekp(static_cast<std::streamoff>(cluster_to_sector(layout, grubCfgCluster)) * kBytesPerSector,
+        image.seekp(static_cast<std::streamoff>(baseOffsetBytes + static_cast<uint64_t>(cluster_to_sector(layout, grubCfgCluster)) * kBytesPerSector),
                     std::ios::beg);
 
         image.write(reinterpret_cast<const char*>(grubCluster.data()),
@@ -407,7 +533,7 @@ void write_directory_clusters(std::fstream& image, const Layout& layout,
     } 
 }
 
-void write_file_clusters(std::fstream& image, const Layout& layout, const std::vector<uint8_t>& file,
+void write_file_clusters(std::fstream& image, const Layout& layout, uint64_t baseOffsetBytes, const std::vector<uint8_t>& file,
                          uint16_t startCluster) {
     const uint32_t clusterSize = kSectorsPerCluster * kBytesPerSector;
     uint32_t clustersWritten = 0;
@@ -419,7 +545,7 @@ void write_file_clusters(std::fstream& image, const Layout& layout, const std::v
         const uint32_t chunk = std::min(remaining, clusterSize);
         const uint32_t cluster = static_cast<uint32_t>(startCluster) + clustersWritten;
 
-        image.seekp(static_cast<std::streamoff>(cluster_to_sector(layout, cluster)) * kBytesPerSector, std::ios::beg);
+        image.seekp(static_cast<std::streamoff>(baseOffsetBytes + static_cast<uint64_t>(cluster_to_sector(layout, cluster)) * kBytesPerSector), std::ios::beg);
         image.write(reinterpret_cast<const char*>(file.data() + offset), static_cast<std::streamsize>(chunk));
 
         if (chunk < clusterSize) {
@@ -472,8 +598,13 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        const Layout layout = compute_layout(opts.sizeMiB);
+        const Layout layout = compute_layout(kBootPartitionMiB);
         const uint32_t clusterSize = kSectorsPerCluster * kBytesPerSector;
+        const uint64_t totalDiskSectors = static_cast<uint64_t>(opts.sizeMiB) * 1024u * 1024u / kBytesPerSector;
+        const uint64_t bootStartSector = kPartitionAlignmentSectors;
+        const uint64_t bootSectorCount = layout.totalSectors;
+        const uint64_t persistStartSector = bootStartSector + bootSectorCount;
+        const uint64_t persistSectorCount = (totalDiskSectors > persistStartSector) ? (totalDiskSectors - persistStartSector) : 0u;
 
         const uint32_t efiClusters = (static_cast<uint32_t>(efiBinary.size()) + clusterSize - 1u) / clusterSize;
 
@@ -485,27 +616,110 @@ int main(int argc, char* argv[]) {
             ? (static_cast<uint32_t>(kernel64Binary.size()) + clusterSize - 1u) / clusterSize
             : 0u;
 
-        const uint32_t rootfsClusters = includeKernelFiles
-            ? (static_cast<uint32_t>(rootfsBinary.size()) + clusterSize - 1u) / clusterSize
-            : 0u;
-        
         const uint32_t grubCfgClusters = includeKernelFiles
             ? (static_cast<uint32_t>(grubCfgBinary.size()) + clusterSize - 1u) / clusterSize
             : 0u;
 
         const uint32_t requiredDataClusters = 
             efiClusters + kernel32Clusters + kernel64Clusters + 
-            rootfsClusters + grubCfgClusters + (includeKernelFiles ? 4u : 3u);
+            grubCfgClusters + (includeKernelFiles ? 4u : 3u);
 
         if (layout.clusterCount < requiredDataClusters) {
-            std::cerr << "EFI image too small for payload" << "\n";
+            std::cerr << "boot partition too small for payload" << "\n";
 
             return 1;
         }
 
-        const std::filesystem::path outPath(opts.outputPath);
+        if (!includeKernelFiles) {
+            const std::filesystem::path outPath(opts.outputPath);
+            const std::filesystem::path outDir = outPath.parent_path();
 
-        std::filesystem::create_directories(outPath.parent_path());
+            std::filesystem::create_directories(outDir);
+
+            std::fstream image(opts.outputPath, std::ios::in | std::ios::out | std::ios::binary | std::ios::trunc);
+
+            if (!image) {
+                std::cerr << "failed to create output image: " << opts.outputPath << "\n";
+                return 1;
+            }
+
+            image.seekp(static_cast<std::streamoff>(layout.totalSectors) * kBytesPerSector - 1);
+            image.put('\0');
+
+            if (!image) {
+                std::cerr << "failed to size EFI boot image" << "\n";
+                return 1;
+            }
+
+            write_boot_sector(image, layout, 0);
+            write_fat_tables(image, layout, 0,
+                             efiClusters, 0u, 0u, 0u, 0u,
+                             false);
+            write_root_directory(image, layout, 0, false);
+
+            const uint32_t efiStartCluster = 4u;
+
+            write_directory_clusters(image, layout, 0,
+                                     efiBinary.empty() ? 0u : static_cast<uint32_t>(efiBinary.size()),
+                                     0u, 0u, 0u, 0u,
+                                     efiStartCluster, 0u, 0u, 0u, 0u,
+                                     false);
+
+            write_file_clusters(image, layout, 0, efiBinary, static_cast<uint16_t>(efiStartCluster));
+            image.flush();
+
+            if (!image) {
+                std::cerr << "failed while writing EFI boot image" << "\n";
+                return 1;
+            }
+
+            std::cout << "EFI boot image written: " << opts.outputPath << " (" << opts.sizeMiB << " MiB)\n";
+            return 0;
+        }
+
+        if (persistSectorCount == 0u) {
+            std::cerr << "disk image too small for persistent ext4 partition" << "\n";
+            return 1;
+        }
+
+        const uint32_t persistSizeMiB = static_cast<uint32_t>((persistSectorCount * kBytesPerSector) / (1024u * 1024u));
+
+        if (persistSizeMiB == 0u) {
+            std::cerr << "persistent partition size rounds to zero" << "\n";
+            return 1;
+        }
+
+        const std::filesystem::path outPath(opts.outputPath);
+        const std::filesystem::path outDir = outPath.parent_path();
+        const std::filesystem::path stageRoot = outDir / (outPath.stem().string() + "-ext4-stage");
+        const std::filesystem::path ext4ImagePath = outDir / (outPath.stem().string() + "-persist.ext4");
+
+        std::filesystem::remove_all(stageRoot);
+        ensure_directory_tree(stageRoot);
+
+        if (!write_file(stageRoot / "boot/rootfs.seed", rootfsBinary)) {
+            std::cerr << "failed to stage persistent rootfs seed" << "\n";
+            return 1;
+        }
+
+        if (!build_ext4_image(stageRoot, ext4ImagePath, persistSizeMiB)) {
+            std::cerr << "failed to build persistent ext4 image" << "\n";
+            return 1;
+        }
+
+        std::vector<uint8_t> ext4Binary;
+
+        if (!read_file(ext4ImagePath.string(), ext4Binary)) {
+            std::cerr << "failed to read persistent ext4 image" << "\n";
+            return 1;
+        }
+
+        if (ext4Binary.size() != static_cast<size_t>(persistSectorCount) * kBytesPerSector) {
+            std::cerr << "persistent ext4 image size mismatch" << "\n";
+            return 1;
+        }
+
+        std::filesystem::create_directories(outDir);
         std::ofstream create(opts.outputPath, std::ios::binary | std::ios::trunc);
 
         if (!create) {
@@ -513,7 +727,7 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
-        create.seekp(static_cast<std::streamoff>(layout.totalSectors) * kBytesPerSector - 1);
+        create.seekp(static_cast<std::streamoff>(totalDiskSectors) * kBytesPerSector - 1);
         create.put('\0');
         
         std::fstream image(opts.outputPath, std::ios::in | std::ios::out | std::ios::binary);
@@ -523,37 +737,57 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
-        write_boot_sector(image, layout);
+        const Partition bootPartition = {
+            .startSector = bootStartSector,
+            .sectorCount = bootSectorCount,
+            .type = kMbrPartitionTypeEfi,
+            .bootable = true,
+        };
 
-        write_fat_tables(image, layout, 
-            efiClusters, kernel32Clusters, kernel64Clusters, rootfsClusters, grubCfgClusters,
+        const Partition persistentPartition = {
+            .startSector = persistStartSector,
+            .sectorCount = persistSectorCount,
+            .type = kMbrPartitionTypeLinux,
+            .bootable = false,
+        };
+
+        write_mbr(image, bootPartition, persistentPartition);
+
+        const uint64_t bootBaseBytes = bootStartSector * kBytesPerSector;
+
+        write_boot_sector(image, layout, bootBaseBytes);
+
+        write_fat_tables(image, layout, bootBaseBytes,
+            efiClusters, kernel32Clusters, kernel64Clusters, 0u, grubCfgClusters,
             includeKernelFiles);
 
-        write_root_directory(image, layout, includeKernelFiles);
+        write_root_directory(image, layout, bootBaseBytes, includeKernelFiles);
 
         const uint32_t efiStartCluster = includeKernelFiles ? 6u : 4u;
         const uint32_t kernel32StartCluster = efiStartCluster + efiClusters;
         const uint32_t kernel64StartCluster = kernel32StartCluster + kernel32Clusters;
-        const uint32_t rootfsStartCluster = kernel64StartCluster + kernel64Clusters;
-        const uint32_t grubCfgStartCluster = rootfsStartCluster + rootfsClusters;
+        const uint32_t grubCfgStartCluster = kernel64StartCluster + kernel64Clusters;
 
-        write_directory_clusters(image, layout, 
+        write_directory_clusters(image, layout, bootBaseBytes,
                                 efiBinary.empty()      ? 0u : static_cast<uint32_t>(efiBinary.size()),
                                 kernel32Binary.empty() ? 0u : static_cast<uint32_t>(kernel32Binary.size()),
                                 kernel64Binary.empty() ? 0u : static_cast<uint32_t>(kernel64Binary.size()),
-                                rootfsBinary.empty()   ? 0u : static_cast<uint32_t>(rootfsBinary.size()),
+                                0u,
                                 grubCfgBinary.empty()  ? 0u : static_cast<uint32_t>(grubCfgBinary.size()),
-                                efiStartCluster, kernel32StartCluster, kernel64StartCluster, rootfsStartCluster, grubCfgStartCluster,
+                                efiStartCluster, kernel32StartCluster, kernel64StartCluster, 0u, grubCfgStartCluster,
                                 includeKernelFiles);
 
-        write_file_clusters(image, layout, efiBinary, static_cast<uint16_t>(efiStartCluster));
+        write_file_clusters(image, layout, bootBaseBytes, efiBinary, static_cast<uint16_t>(efiStartCluster));
 
         if (includeKernelFiles) {
-            write_file_clusters(image, layout, kernel32Binary, static_cast<uint16_t>(kernel32StartCluster));
-            write_file_clusters(image, layout, kernel64Binary, static_cast<uint16_t>(kernel64StartCluster));
-            write_file_clusters(image, layout, rootfsBinary, static_cast<uint16_t>(rootfsStartCluster));
-            write_file_clusters(image, layout, grubCfgBinary, static_cast<uint16_t>(grubCfgStartCluster));
+            write_file_clusters(image, layout, bootBaseBytes, kernel32Binary, static_cast<uint16_t>(kernel32StartCluster));
+            write_file_clusters(image, layout, bootBaseBytes, kernel64Binary, static_cast<uint16_t>(kernel64StartCluster));
+            write_file_clusters(image, layout, bootBaseBytes, grubCfgBinary, static_cast<uint16_t>(grubCfgStartCluster));
         }
+
+        const uint64_t persistBaseBytes = persistStartSector * kBytesPerSector;
+        image.seekp(static_cast<std::streamoff>(persistBaseBytes), std::ios::beg);
+        image.write(reinterpret_cast<const char*>(ext4Binary.data()), static_cast<std::streamsize>(ext4Binary.size()));
 
         image.flush();
 
@@ -562,7 +796,7 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
-        std::cout << "EFI boot image written: " << opts.outputPath << " (" << opts.sizeMiB << " MiB)\n";
+        std::cout << "USB disk image written: " << opts.outputPath << " (" << opts.sizeMiB << " MiB)\n";
         return 0;
 
     } catch (const std::exception& ex) {

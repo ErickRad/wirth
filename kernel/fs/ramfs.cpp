@@ -652,7 +652,7 @@ int RamFs::close(int fd) {
     return 0;
 }
 
-int RamFs::mkdir(const char* path) {
+int RamFs::md(const char* path) {
     kernel::sync::LockGuard guard(m_lock);
 
 
@@ -758,7 +758,7 @@ int RamFs::readdir(const char* path, DirEntry* entries, uint32_t max_entries) {
     return static_cast<int>(out_count);
 }
 
-int RamFs::rmdir(const char* path) {
+int RamFs::rd(const char* path) {
     kernel::sync::LockGuard guard(m_lock);
 
     char normalized[64];

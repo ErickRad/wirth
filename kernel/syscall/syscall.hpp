@@ -14,11 +14,11 @@ enum Number : uint32_t {
     kGetPid = 7,
     kGetTid = 8,
     kProcCount = 9,
-    kMkdir = 10,
+    kMd = 10,
     kGetUid = 11,
     kGetGid = 12,
     kReaddir = 13,
-    kRmdir = 14,
+    kRd = 14,
     kUnlink = 15,
 };
 

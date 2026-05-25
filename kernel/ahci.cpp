@@ -62,12 +62,10 @@ static volatile uint32_t* g_hba_regs = nullptr;
 static PortState g_ports[32];
 
 #ifndef __x86_64__
-static void stop_port(uint32_t port);
 static void start_port(uint32_t port);
 static bool ahci_read_sectors(uint64_t lba, uint8_t* buf, uint32_t count);
 static bool ahci_write_sectors(uint64_t lba, const uint8_t* buf, uint32_t count);
-#else
-static bool ahci_read_sectors(uint64_t lba, uint8_t* buf, uint32_t count);
+
 #endif
 
 void print_info() {
@@ -203,39 +201,29 @@ bool init() {
             // allocate CLB/FIS/CMD tables only on 32-bit builds; on x86_64 mapping
             // is handled differently by the platform (or left for later).
 #ifndef __x86_64__
-            void* clb = kernel::mm::heap::alloc(1024, 1024);
-            void* fis = kernel::mm::heap::alloc(256, 256);
-            void* cmd_tables = kernel::mm::heap::alloc(256 * 32, 1024);
+    void* clb = kernel::mm::heap::alloc(1024, 1024);
+    void* fis = kernel::mm::heap::alloc(256, 256);
+    void* cmd_tables = kernel::mm::heap::alloc(256 * 32, 1024);
 
-            g_ports[port].regs = pbase;
-            g_ports[port].clb = clb;
-            g_ports[port].fis = fis;
-            g_ports[port].cmd_tables = cmd_tables;
-            g_ports[port].present = true;
+    g_ports[port].regs = pbase;
+    g_ports[port].clb = clb;
+    g_ports[port].fis = fis;
+    g_ports[port].cmd_tables = cmd_tables;
+    g_ports[port].present = true;
 
-            // start the port so CLB/FIS take effect
-            start_port(port);
-#else
-            g_ports[port].regs = pbase;
-            g_ports[port].clb = nullptr;
-            g_ports[port].fis = nullptr;
-            g_ports[port].cmd_tables = nullptr;
-            g_ports[port].present = true;
+    start_port(port);
 #endif
-        }
+}
 
-        // Register block device placeholder
         static kernel::BlockDevice ahci_block = {};
 
         ahci_block.name = "ahci0";
         ahci_block.block_size = 512;
         ahci_block.block_count = 0;
+
     #ifndef __x86_64__
-        ahci_block.read_sectors = &ahci_read_sectors; // read implemented
+        ahci_block.read_sectors = &ahci_read_sectors;
         ahci_block.write_sectors = &ahci_write_sectors;
-    #else
-        ahci_block.read_sectors = nullptr; // x86_64: unimplemented
-        ahci_block.write_sectors = nullptr;
     #endif
         ahci_block.ctx = nullptr;
 
@@ -246,22 +234,8 @@ bool init() {
 
     return false;
 }
+
 #ifndef __x86_64__
-static void stop_port(uint32_t port) {
-    if (port >= 32) return;
-    if (!g_ports[port].present) return;
-
-    volatile uint32_t* regs = g_ports[port].regs;
-    if (regs == nullptr) return;
-
-    // Clear ST (start) bit
-    regs[0x18 / 4] &= ~0x1u;
-
-    // Wait for CR (command list running) to clear (bit 15)
-    while ((regs[0x18 / 4] & (1u << 15)) != 0u) {
-        kernel::task::scheduler::sleep_current(1, kernel::arch::x86::interrupts::ticks());
-    }
-}
 
 static void start_port(uint32_t port) {
     if (port >= 32) return;

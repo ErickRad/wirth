@@ -256,7 +256,7 @@ bool try_load_rootfs_seed_from_esp() {
         if (fc == 0xFFFFu) break;
     }
 
-    // Apply seed: parse lines and call simple handlers (mkdir/md supported)
+    // Apply seed: parse lines and call simple handlers (md/md supported)
     if (kernel::fs::g_fs == nullptr) {
         kernel::serial::write("[efifs]: ramfs not initialized\n");
         return false;
@@ -279,9 +279,9 @@ bool try_load_rootfs_seed_from_esp() {
                     if (*cursor != '\0') *cursor++ = '\0';
                     while (*cursor == ' ' || *cursor == '\t') ++cursor;
                     if (*cmd == 'm' && cmd[1] == 'd') {
-                        kernel::fs::g_fs->mkdir(cursor);
+                        kernel::fs::g_fs->md(cursor);
                     } else if (line_len >= 5 && cmd[0] == 'm' && cmd[1] == 'd') {
-                        kernel::fs::g_fs->mkdir(cursor);
+                        kernel::fs::g_fs->md(cursor);
                     }
                 }
                 line_len = 0;
@@ -303,7 +303,7 @@ bool try_load_rootfs_seed_from_esp() {
             if (*cursor != '\0') *cursor++ = '\0';
             while (*cursor == ' ' || *cursor == '\t') ++cursor;
             if (*cmd == 'm' && cmd[1] == 'd') {
-                kernel::fs::g_fs->mkdir(cursor);
+                kernel::fs::g_fs->md(cursor);
             }
         }
     }

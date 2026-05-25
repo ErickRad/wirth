@@ -20,6 +20,25 @@ bool block_register_device(BlockDevice* dev) {
     return false;
 }
 
+bool block_visit_devices(BlockDeviceVisitor visitor, void* user_data) {
+    if (visitor == nullptr) {
+        return false;
+    }
+
+    bool visited = false;
+
+    for (int i = 0; i < 8; ++i) {
+        if (g_devices[i] == nullptr) {
+            continue;
+        }
+
+        visitor(g_devices[i], user_data);
+        visited = true;
+    }
+
+    return visited;
+}
+
 BlockDevice* block_get_primary() {
     return g_devices[0];
 }

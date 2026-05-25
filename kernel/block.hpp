@@ -16,6 +16,11 @@ struct BlockDevice {
 // Register a block device. Returns true on success.
 bool block_register_device(BlockDevice* dev);
 
+using BlockDeviceVisitor = void (*)(BlockDevice* dev, void* user_data);
+
+// Visit all registered block devices in registration order.
+bool block_visit_devices(BlockDeviceVisitor visitor, void* user_data);
+
 // Return the primary (first) registered block device or nullptr.
 BlockDevice* block_get_primary();
 

@@ -5,6 +5,7 @@
 
 .section .multiboot, "a"
 .align 8
+
 mb2_header_start:
     .long MB2_MAGIC
     .long MB2_ARCH
@@ -14,6 +15,7 @@ mb2_header_start:
     .short 0
     .short 0
     .long 8
+
 mb2_header_end:
 
 .section .text
@@ -21,6 +23,7 @@ mb2_header_end:
 .global _start
 .type _start, @function
 .extern kernel_main64
+
 _start:
     cli
     mov $stack64_top, %esp
@@ -72,6 +75,7 @@ halt64:
 .section .data
 .align 4096
 .global pml4
+
 pml4:
     .quad pdpt + 0x03
     .fill 511, 8, 0
@@ -89,6 +93,7 @@ gdt64:
     .quad 0x0000000000000000
     .quad 0x00AF9A000000FFFF
     .quad 0x00AF92000000FFFF
+
 gdt64_end:
 gdt64_ptr:
     .word gdt64_end - gdt64 - 1
@@ -101,6 +106,7 @@ mb_info32:
 
 .section .bss
 .align 16
+
 stack64_bottom:
     .skip 16384
 stack64_top:

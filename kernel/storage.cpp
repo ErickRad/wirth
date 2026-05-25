@@ -360,7 +360,7 @@ void storage_restore_packages() {
             po += path_len;
  
             // ensure parent directories exist before creating file
-            // build parent prefix and mkdir progressively
+            // build parent prefix and md progressively
             if (path[0] != '\0') {
                 char prefix[256] = {};
                 uint32_t p = 0;
@@ -369,7 +369,7 @@ void storage_restore_packages() {
                 for (uint32_t pi = 1; pi < text_len(path); ++pi) {
                     if (path[pi] == '/') {
                         prefix[p] = '\0';
-                        (void)kernel::fs::g_fs->mkdir(prefix);
+                        (void)kernel::fs::g_fs->md(prefix);
                         if (p + 1 < sizeof(prefix)) { prefix[p++] = '/'; }
                         continue;
                     }

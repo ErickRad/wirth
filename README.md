@@ -35,11 +35,13 @@ make run-uefi
 make usb
 ```
 
+O `make usb` gera uma imagem raw com MBR, uma partição FAT de boot/EFI e uma partição ext4 persistente para o seed do rootfs.
+
 ## Usar em pendrive
 ```bash
 sudo dd if=build/wirth-usb.img of=/dev/sdX bs=4M status=progress oflag=sync
 ```
-Substitua `/dev/sdX` pelo dispositivo cru do pendrive. A ISO continua servindo para CD/OVMF; a imagem do pendrive inclui o EFI carregador e os kernels no mesmo FAT.
+Substitua `/dev/sdX` pelo dispositivo cru do pendrive. A ISO continua servindo para CD/OVMF; a imagem do pendrive agora traz boot EFI em FAT e persistência em ext4 dentro do mesmo disco.
 
 ## Estrutura
 - `boot/`: entrada em ASM, linker e configuração do GRUB
@@ -53,6 +55,7 @@ Substitua `/dev/sdX` pelo dispositivo cru do pendrive. A ISO continua servindo p
 - `kernel/fs/`: VFS mínimo com backend `ramfs`
 - `docs/SPEC_V0.md`: especificação técnica da fase inicial
 - `docs/build.md`: histórico técnico consolidado das implementações
+- `docs/roadmap.md`: ordem de implementação para boot, memória, storage, USB e userland
 
 ## Estado atual
 - Build do kernel (`make`) já funcional.
@@ -71,7 +74,7 @@ Substitua `/dev/sdX` pelo dispositivo cru do pendrive. A ISO continua servindo p
 - VFS/ramfs com caminhos aninhados e diretórios (`/bin/note.txt`) implementado.
 - Syscalls de arquivo adicionadas: `open`, `read`, `close` e `write` para FDs de arquivo.
 - Rootfs inicial com `/root`, `/home/root`, `/etc/passwd` e `/root/.profile`.
-- Novas syscalls de processo/FS: `getpid`, `gettid`, `proc_count`, `mkdir`, `getuid`, `getgid`.
+- Novas syscalls de processo/FS: `getpid`, `gettid`, `proc_count`, `md`, `getuid`, `getgid`.
 - Loader ELF já executa `/bin/init.elf` em ring3 com `int 0x80`.
 - Geração de ISO (`make iso`) funcional no fluxo atual.
 - Geração de ISO híbrida BIOS/UEFI funcional, pronta para live USB.

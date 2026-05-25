@@ -17,11 +17,11 @@ enum class Syscall : uint32_t {
     kGetPid = 7,
     kGetTid = 8,
     kProcCount = 9,
-    kMkdir = 10,
+    kmd = 10,
     kGetUid = 11,
     kGetGid = 12,
     kReaddir = 13,
-    kRmdir = 14,
+    krd = 14,
     kUnlink = 15,
 };
 
@@ -77,8 +77,8 @@ inline uint32_t sys_close(uint32_t fd) {
     return syscall(Syscall::kClose, fd);
 }
 
-inline uint32_t sys_mkdir(const char* path) {
-    return syscall(Syscall::kMkdir, reinterpret_cast<uint32_t>(path));
+inline uint32_t sys_md(const char* path) {
+    return syscall(Syscall::kmd, reinterpret_cast<uint32_t>(path));
 }
 
 struct DirEntry {
@@ -94,8 +94,8 @@ inline uint32_t sys_readdir(const char* path, DirEntry* entries, uint32_t max_en
         max_entries);
 }
 
-inline uint32_t sys_rmdir(const char* path) {
-    return syscall(Syscall::kRmdir, reinterpret_cast<uint32_t>(path));
+inline uint32_t sys_rd(const char* path) {
+    return syscall(Syscall::krd, reinterpret_cast<uint32_t>(path));
 }
 
 inline uint32_t sys_unlink(const char* path) {

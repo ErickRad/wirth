@@ -48,14 +48,17 @@ OBJS := \
 	$(BUILD_DIR)/ring3_entry_stub.o \
 	$(BUILD_DIR)/kmain.o \
 	$(BUILD_DIR)/multiboot2.o \
+	$(BUILD_DIR)/acpi.o \
 	$(BUILD_DIR)/serial.o \
 	$(BUILD_DIR)/video.o \
+	$(BUILD_DIR)/framebuffer.o \
         $(BUILD_DIR)/pci.o \
 	$(BUILD_DIR)/shell.o \
 	$(BUILD_DIR)/interrupts.o \
 	$(BUILD_DIR)/gdt.o \
 	$(BUILD_DIR)/pic.o \
 	$(BUILD_DIR)/block.o \
+	$(BUILD_DIR)/block_partition.o \
 	$(BUILD_DIR)/pit.o \
 	$(BUILD_DIR)/syscall.o \
 	$(BUILD_DIR)/scheduler.o \
@@ -80,10 +83,18 @@ OBJS64 := \
 	$(BUILD_DIR)/kmain64.o \
 	$(BUILD_DIR)/serial64.o \
 	$(BUILD_DIR)/video64.o \
+	$(BUILD_DIR)/framebuffer64.o \
 	$(BUILD_DIR)/pci64.o \
 	$(BUILD_DIR)/multiboot264.o \
 	$(BUILD_DIR)/gdt64.o \
+	$(BUILD_DIR)/interrupts64_stub.o \
 	$(BUILD_DIR)/interrupts64.o \
+	$(BUILD_DIR)/acpi64.o \
+	$(BUILD_DIR)/pic64.o \
+	$(BUILD_DIR)/lapic64.o \
+	$(BUILD_DIR)/ioapic64.o \
+	$(BUILD_DIR)/irq_handlers64.o \
+	$(BUILD_DIR)/input_keyboard64.o \
 	$(BUILD_DIR)/ramfs64.o \
 	$(BUILD_DIR)/block64.o \
 	$(BUILD_DIR)/ide64.o \
@@ -93,8 +104,7 @@ OBJS64 := \
 	$(BUILD_DIR)/nvme64.o \
 	$(BUILD_DIR)/xhci64.o \
 	$(BUILD_DIR)/usbms64.o \
-	$(BUILD_DIR)/scheduler64.o \
-	$(BUILD_DIR)/rootfs_embedded.o
+	$(BUILD_DIR)/scheduler64.o
 
 .PHONY: all clean iso run check-tools check-iso-tools check-run-tools toolchain
 
@@ -131,7 +141,7 @@ $(BUILD_DIR)/boot64.o: boot/boot64.S | $(BUILD_DIR) check-tools
 
 $(UEFI_EFI_EXE): boot/grub/grub.cfg | $(BUILD_DIR) check-iso-tools
 	# Create a GRUB EFI image that reads its config from the FAT image at /boot/grub
-	grub-mkimage -O x86_64-efi -p /boot/grub \
+	grub-mkimage -O x86_64-efi -p /boot/grub -c boot/grub/grub.cfg \
 		part_gpt part_msdos fat iso9660 multiboot2 \
 		normal configfile search all_video \
 		efi_gop efi_uga gfxterm font test\
@@ -163,7 +173,13 @@ $(BUILD_DIR)/kmain.o: kernel/kmain.cpp kernel/serial.hpp kernel/fs/ramfs.hpp ker
 $(BUILD_DIR)/kmain64.o: kernel/kmain64.cpp kernel/serial.hpp kernel/boot/multiboot2.hpp kernel/arch/x86_64/gdt.hpp kernel/arch/x86_64/interrupts.hpp | $(BUILD_DIR) check-tools
 	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
 
+$(BUILD_DIR)/interrupts64_stub.o: boot/interrupts64.S | $(BUILD_DIR) check-tools
+	$(HOSTCC) $(CFLAGS64) -c $< -o $@
+
 $(BUILD_DIR)/multiboot2.o: kernel/boot/multiboot2.cpp kernel/boot/multiboot2.hpp kernel/serial.hpp | $(BUILD_DIR) check-tools
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/acpi.o: kernel/boot/acpi.cpp kernel/boot/acpi.hpp kernel/boot/multiboot2.hpp kernel/serial.hpp | $(BUILD_DIR) check-tools
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/multiboot264.o: kernel/boot/multiboot2.cpp kernel/boot/multiboot2.hpp kernel/serial.hpp | $(BUILD_DIR) check-tools
@@ -181,10 +197,19 @@ $(BUILD_DIR)/video.o: kernel/video.cpp kernel/video.hpp | $(BUILD_DIR) check-too
 $(BUILD_DIR)/video64.o: kernel/video.cpp kernel/video.hpp | $(BUILD_DIR) check-tools
 	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
 
+$(BUILD_DIR)/framebuffer.o: kernel/framebuffer.cpp kernel/framebuffer.hpp | $(BUILD_DIR) check-tools
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/framebuffer64.o: kernel/framebuffer.cpp kernel/framebuffer.hpp | $(BUILD_DIR) check-tools
+	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
+
 $(BUILD_DIR)/pci.o: kernel/pci.cpp kernel/pci.hpp kernel/arch/x86/io.hpp | $(BUILD_DIR) check-tools
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/block.o: kernel/block.cpp kernel/block.hpp kernel/serial.hpp | $(BUILD_DIR) check-tools
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/block_partition.o: kernel/block_partition.cpp kernel/block_partition.hpp kernel/block.hpp kernel/serial.hpp | $(BUILD_DIR) check-tools
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/shell.o: kernel/shell.cpp kernel/shell.hpp kernel/fs/vfs.hpp kernel/serial.hpp kernel/task/scheduler.hpp | $(BUILD_DIR) check-tools
@@ -194,6 +219,24 @@ $(BUILD_DIR)/interrupts.o: kernel/arch/x86/interrupts.cpp kernel/arch/x86/interr
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/interrupts64.o: kernel/arch/x86_64/interrupts.cpp kernel/arch/x86_64/interrupts.hpp kernel/serial.hpp | $(BUILD_DIR) check-tools
+	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
+
+$(BUILD_DIR)/acpi64.o: kernel/boot/acpi.cpp kernel/boot/acpi.hpp kernel/boot/multiboot2.hpp kernel/serial.hpp | $(BUILD_DIR) check-tools
+	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
+
+$(BUILD_DIR)/pic64.o: kernel/arch/x86/pic.cpp kernel/arch/x86/pic.hpp kernel/arch/x86/io.hpp | $(BUILD_DIR) check-tools
+	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
+
+$(BUILD_DIR)/lapic64.o: kernel/arch/x86_64/lapic.cpp kernel/arch/x86_64/lapic.hpp kernel/serial.hpp | $(BUILD_DIR) check-tools
+	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
+
+$(BUILD_DIR)/ioapic64.o: kernel/arch/x86_64/ioapic.cpp kernel/arch/x86_64/ioapic.hpp kernel/serial.hpp | $(BUILD_DIR) check-tools
+	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
+
+$(BUILD_DIR)/irq_handlers64.o: kernel/arch/x86_64/irq_handlers.cpp kernel/arch/x86_64/lapic.hpp kernel/input/keyboard.hpp kernel/serial.hpp | $(BUILD_DIR) check-tools
+	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
+
+$(BUILD_DIR)/input_keyboard64.o: kernel/input/keyboard.cpp kernel/input/keyboard.hpp | $(BUILD_DIR) check-tools
 	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
 
 $(BUILD_DIR)/ramfs64.o: kernel/fs/ramfs.cpp kernel/fs/ramfs.hpp kernel/fs/vfs.hpp kernel/sync/spinlock.hpp kernel/serial.hpp | $(BUILD_DIR) check-tools
@@ -230,9 +273,6 @@ $(BUILD_DIR)/pci64.o: kernel/pci.cpp kernel/pci.hpp kernel/arch/x86/io.hpp | $(B
 	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
 
 $(BUILD_DIR)/block64.o: kernel/block.cpp kernel/block.hpp kernel/serial.hpp | $(BUILD_DIR) check-tools
-	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
-
-$(BUILD_DIR)/rootfs_embedded.o: kernel/rootfs_embedded.cpp | $(BUILD_DIR) check-tools
 	$(HOSTCXX) $(CXXFLAGS64) -c $< -o $@
 
 $(BUILD_DIR)/gdt.o: kernel/arch/x86/gdt.cpp kernel/arch/x86/gdt.hpp | $(BUILD_DIR) check-tools

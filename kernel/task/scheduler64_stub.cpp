@@ -4,8 +4,6 @@ using namespace kernel::task::scheduler;
 
 namespace kernel::task::scheduler {
 
-void init(uint32_t kernel_stack_esp) {}
-
 int create_kernel_task(TaskEntry entry, uint32_t stack_size) { (void)entry; (void)stack_size; return -1; }
 
 int create_process_task(const char* process_name, TaskEntry entry, uint32_t stack_size) { (void)process_name; (void)entry; (void)stack_size; return -1; }

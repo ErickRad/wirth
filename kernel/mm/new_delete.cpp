@@ -11,17 +11,17 @@ void* operator new[](size_t size) {
 }
 
 void operator delete(void* ptr) noexcept {
-    (void)ptr;
+    kernel::mm::heap::free(ptr);
 }
 
 void operator delete[](void* ptr) noexcept {
-    (void)ptr;
+    kernel::mm::heap::free(ptr);
 }
 
 void operator delete(void* ptr, size_t) noexcept {
-    (void)ptr;
+    kernel::mm::heap::free(ptr);
 }
 
 void operator delete[](void* ptr, size_t) noexcept {
-    (void)ptr;
+    kernel::mm::heap::free(ptr);
 }

@@ -1,5 +1,3 @@
-extern "C" const char kEmbeddedRootfsSeed[];
-extern "C" const unsigned kEmbeddedRootfsSeedSize;
 #include <stdint.h>
 #include <stddef.h>
 
@@ -8,7 +6,10 @@ extern "C" const unsigned kEmbeddedRootfsSeedSize;
 #include "arch/x86/io.hpp"
 #include "arch/x86_64/gdt.hpp"
 #include "arch/x86_64/interrupts.hpp"
+#include "arch/x86_64/lapic.hpp"
 #include "boot/multiboot2.hpp"
+#include "boot/acpi.hpp"
+#include "arch/x86_64/ioapic.hpp"
 #include "serial.hpp"
 #include "video.hpp"
 #include "storage.hpp"
@@ -17,6 +18,8 @@ extern "C" const unsigned kEmbeddedRootfsSeedSize;
 #include "efifs.hpp"
 #include "xhci.hpp"
 #include "usb_mass_storage.hpp"
+#include "input/keyboard.hpp"
+#include "arch/x86/pic.hpp"
 
 namespace {
 
@@ -30,7 +33,6 @@ static size_t g_kernel_heap_used = 0;
 
 static kernel::fs::RamFs* g_ramfs = nullptr;
 
-// Console output helper: emit via serial forwards to VGA
 static inline void out(const char* s) {
     if (s == nullptr) return;
     kernel::serial::write(s);
@@ -67,7 +69,7 @@ static const CommandAlias kCommandAliases[kMaxCommands] = {
     {"la", "ld", 199}, {"l", "ld", 199}, {"list", "ld", 199}, {"listdir", "ld", 199},
     {"contents", "ld", 199}, {"browse", "ld", 199}, {"showdir", "ld", 199},
     {"showfiles", "ld", 199}, {"list-directory", "ld", 199},
-    {"md", "md", 199}, {"mkdir", "md", 199}, {"mk", "md", 199}, {"makedir", "md", 199},
+    {"md", "md", 199}, {"mk", "md", 199}, {"makedir", "md", 199},
     {"newdir", "md", 199}, {"createdir", "md", 199}, {"create-dir", "md", 199},
     {"cd", "cd", 99}, {"chdir", "cd", 99}, {"changedir", "cd", 99}, {"goto", "cd", 99},
     {"pwd", "pwd", 49}, {"cwd", "pwd", 49}, {"whereami", "pwd", 49}, {"here", "pwd", 49},
@@ -75,7 +77,7 @@ static const CommandAlias kCommandAliases[kMaxCommands] = {
     {"cmds", "help", 49}, {"apropos", "help", 49}, {"usage", "help", 49},
     {"reboot", "reboot", 0}, {"poweroff", "poweroff", 0}, {"lsdisk", "lsdisk", 0},
     {"lscpu", "lscpu", 0}, {"lspci", "lspci", 0}, {"tree", "tree", 0},
-    {"cp", "cp", 0}, {"mv", "mv", 0}, {"rm", "rm", 0}, {"rmdir", "rmdir", 0},
+    {"cp", "cp", 0}, {"mv", "mv", 0}, {"rm", "rm", 0}, {"rd", "rd", 0},
     {"cat", "cat", 0}, {"touch", "touch", 0}, {"stat", "stat", 0},
 };
 
@@ -169,7 +171,7 @@ bool fs_remove_path(const char* path) {
     if (kernel::fs::g_fs->unlink(path) == 0) 
         return true;
 
-    if (kernel::fs::g_fs->rmdir(path) == 0) 
+    if (kernel::fs::g_fs->rd(path) == 0) 
         return true;
 
     return false;
@@ -342,7 +344,6 @@ void show_lscpu() {
     uint32_t eax = 0, ebx = 0, ecx = 0, edx = 0;
 
     asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(0));
-    // basic info
     out("Architecture: x86_64\n");
     out("CPU(s): 1\n");
 
@@ -1006,8 +1007,8 @@ void apply_rootfs_seed_line(char* line) {
         return;
     }
 
-    if (text_equal(command, "mkdir") || text_equal(command, "md")) {
-        kernel::fs::g_fs->mkdir(cursor);
+    if (text_equal(command, "md")) {
+        kernel::fs::g_fs->md(cursor);
     }
 }
 
@@ -1527,8 +1528,7 @@ void execute_command(int argc, char* argv[], char* cwd) {
         return;
     }
 
-    if (command_name != nullptr && (text_equal(command_name, "md") || text_equal(command_name, "mkdir") ||
-        text_equal(command_name, "mk") || text_equal(command_name, "makedir") || text_equal(command_name, "newdir") ||
+    if (command_name != nullptr && (text_equal(command_name, "md") || text_equal(command_name, "mk") || text_equal(command_name, "makedir") || text_equal(command_name, "newdir") ||
         text_equal(command_name, "createdir") || text_equal(command_name, "create-dir"))) {
 
         if (argc < 2) {
@@ -1544,7 +1544,7 @@ void execute_command(int argc, char* argv[], char* cwd) {
             return;
         }
 
-        if (filesystem_ready() && kernel::fs::g_fs->mkdir(path) == 0) {
+        if (filesystem_ready() && kernel::fs::g_fs->md(path) == 0) {
             return;
         }
 
@@ -1695,17 +1695,17 @@ void execute_command(int argc, char* argv[], char* cwd) {
         return;
     }
 
-    if (command_name != nullptr && text_equal(command_name, "rmdir")) {
+    if (command_name != nullptr && text_equal(command_name, "rd")) {
         
-        if (argc < 2) { out("rmdir <dir>\n"); return; }
+        if (argc < 2) { out("rd <dir>\n"); return; }
         
         char path[64] = {};
         
         resolve_path(cwd, argv[1], path, sizeof(path));
         
-        if (kernel::fs::g_fs->rmdir(path) == 0) return;
+        if (kernel::fs::g_fs->rd(path) == 0) return;
         
-        out("rmdir: failed\n");
+        out("rd: failed\n");
         
         return;
     }
@@ -1778,7 +1778,10 @@ bool keyboard_read_char_nonblocking(char* out_char) {
     if (out_char == nullptr) {
         return false;
     }
+    // Prefer characters from keyboard module buffer
+    if (kernel::input::keyboard::dequeue_char(out_char)) return true;
 
+    // Fallback: one-shot poll (keeps backward compatibility)
     if ((kernel::arch::x86::io::inb(0x64) & 0x01u) == 0) {
         return false;
     }
@@ -1844,6 +1847,7 @@ bool keyboard_read_char_nonblocking(char* out_char) {
             return false;
     }
 }
+// keyboard buffer and ISR enqueuing moved to kernel/input/keyboard
 
 void console_loop(uint32_t multiboot_info_addr) {
     char line[kMaxLine] = {};
@@ -1860,6 +1864,8 @@ void console_loop(uint32_t multiboot_info_addr) {
 
     kernel::storage_restore_packages();
 
+    kernel::input::keyboard::init();
+
     register_default_commands();
 
     RootfsModuleContext rootfs_ctx = {};
@@ -1870,83 +1876,12 @@ void console_loop(uint32_t multiboot_info_addr) {
         const bool xhci_ready = kernel::xhci::init();
         kernel::serial::write(xhci_ready ? "[wirth] xhci ready\n" : "[wirth] xhci unavailable\n");
 
-        if (xhci_ready) {
-            kernel::xhci::start_poll_task();
-        }
-
         kernel::serial::write("[wirth] usbms probe\n");
         const bool usbms_ready = kernel::usbms::init();
         kernel::serial::write(usbms_ready ? "[wirth] usbms ready\n" : "[wirth] usbms unavailable\n");
 
         if (!kernel::efifs::try_load_rootfs_seed_from_esp()) {
             kernel::serial::write("[efifs]: failed to load ROOTFS.SEED from ESP\n");
-
-            const char* seed = kEmbeddedRootfsSeed;
-            const unsigned seed_sz = kEmbeddedRootfsSeedSize;
-
-            char linebuf[128];
-            uint32_t line_len = 0;
-
-            for (unsigned i = 0; i < seed_sz; ++i) {
-                char ch = seed[i];
-
-                if (ch == '\r' || ch == '\n') {
-
-                    if (line_len > 0) {
-                        linebuf[line_len] = '\0';
-                        char* cursor = linebuf;
-                    
-                        while (*cursor == ' ' || *cursor == '\t') 
-                            ++cursor;
-                    
-                        if (*cursor != '\0' && *cursor != '#') {
-                            char* cmd = cursor;
-                    
-                            while (*cursor != '\0' && *cursor != ' ' && *cursor != '\t') 
-                                ++cursor;
-                    
-                            if (*cursor != '\0') *cursor++ = '\0';
-                    
-                            while (*cursor == ' ' || *cursor == '\t') 
-                                ++cursor;
-                    
-                            if (*cmd == 'm' && cmd[1] == 'd') {
-                                kernel::fs::g_fs->mkdir(cursor);
-                            }
-                        }
-                    
-                        line_len = 0;
-                    }
-                    
-                    continue;
-                }
-
-                if (line_len + 1 < sizeof(linebuf)) linebuf[line_len++] = ch;
-            }
-
-            if (line_len > 0) {
-                linebuf[line_len] = '\0';
-                char* cursor = linebuf;
-                
-                while (*cursor == ' ' || *cursor == '\t') 
-                    ++cursor;
-                
-                if (*cursor != '\0' && *cursor != '#') {
-                    char* cmd = cursor;
-                
-                    while (*cursor != '\0' && *cursor != ' ' && *cursor != '\t') 
-                        ++cursor;
-                
-                    if (*cursor != '\0') *cursor++ = '\0';
-                
-                    while (*cursor == ' ' || *cursor == '\t') 
-                        ++cursor;
-                
-                    if (*cmd == 'm' && cmd[1] == 'd') {
-                        kernel::fs::g_fs->mkdir(cursor);
-                    }
-                }
-            }
         }
     }
     copy_text(cwd, "/home/root", sizeof(cwd));
@@ -1956,6 +1891,8 @@ void console_loop(uint32_t multiboot_info_addr) {
 
     while (true) {
         char c = 0;
+        // Drain keyboard buffer aggressively each loop to minimize latency
+        kernel::input::keyboard::drain_poll();
 
         if (!kernel::serial::read_char_nonblocking(&c)) {
             if (!keyboard_read_char_nonblocking(&c)) {
@@ -2048,9 +1985,33 @@ extern "C" void kernel_main64(uint32_t multiboot_magic, uint32_t multiboot_info_
 
     kernel::boot::multiboot2::log_memory_map(multiboot_info_addr);
     kernel::boot::multiboot2::log_modules(multiboot_info_addr);
+    // Discover ACPI tables and initialize local APIC if available
+    {
+        kernel::boot::acpi::AcpiInfo ai = {};
+        if (kernel::boot::acpi::discover(multiboot_info_addr, &ai) && ai.found && ai.local_apic_phys != 0) {
+            kernel::serial::write("[wirth] LAPIC detected at 0x");
+            kernel::serial::write_hex(ai.local_apic_phys);
+            kernel::serial::write("\n");
+            kernel::arch::x86_64::lapic::init(ai.local_apic_phys);
+            if (ai.ioapic_count > 0) {
+                for (uint32_t i = 0; i < ai.ioapic_count && i < 8; ++i) {
+                    uint32_t phys = ai.ioapic_phys[i];
+                    uint32_t gsi = ai.ioapic_gsi_base[i];
+                    kernel::arch::x86_64::ioapic::init(phys, gsi);
+                }
+            }
+        }
+    }
 
     kernel::arch::x86_64::gdt::init();
+    // Remap legacy PIC and enable keyboard IRQ line
+    kernel::arch::x86::pic::remap(0x20, 0x28);
+    kernel::arch::x86::pic::clear_irq_mask(1);
+
     kernel::arch::x86_64::interrupts::init();
+
+    // Unmask common keyboard GSI (1) on IOAPICs if present
+    kernel::arch::x86_64::ioapic::unmask_gsi(1);
 
     kernel::arch::x86_64::interrupts::enable();
     

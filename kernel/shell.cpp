@@ -10,9 +10,12 @@
 #include "serial.hpp"
 #include "task/scheduler.hpp"
 #include "storage.hpp"
+#include "block.hpp"
 #include "pci.hpp"
 #include "drivers/ide.hpp"
 #include "ahci.hpp"
+#include "xhci.hpp"
+#include "usb_mass_storage.hpp"
 
 namespace {
 
@@ -182,6 +185,58 @@ void cpuid(uint32_t leaf, uint32_t subleaf, uint32_t& eax, uint32_t& ebx, uint32
     asm volatile("cpuid"
                  : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
                  : "a"(leaf), "c"(subleaf));
+}
+
+const char* pci_vendor_name(uint16_t vendor_id) {
+    switch (vendor_id) {
+        case 0x8086: return "Intel";
+        case 0x10EC: return "Realtek";
+        case 0x1234: return "QEMU/Bochs";
+        case 0x1B36: return "Red Hat/QEMU";
+        case 0x10DE: return "NVIDIA";
+        case 0x1002: return "AMD/ATI";
+        default: return nullptr;
+    }
+}
+
+const char* pci_class_name(uint8_t class_code, uint8_t subclass, uint8_t prog_if) {
+    switch (class_code) {
+        case 0x01:
+            switch (subclass) {
+                case 0x01: return "mass storage (IDE)";
+                case 0x06: return "mass storage (SATA)";
+                case 0x08: return "mass storage (NVMe)";
+                default: return "mass storage";
+            }
+        case 0x02:
+            return "network controller";
+        case 0x03:
+            return "display controller";
+        case 0x04:
+            return "multimedia controller";
+        case 0x05:
+            return "memory controller";
+        case 0x06:
+            switch (subclass) {
+                case 0x00: return "host bridge";
+                case 0x01: return "ISA bridge";
+                case 0x04: return "PCI bridge";
+                default: return "bridge";
+            }
+        case 0x0C:
+            if (subclass == 0x03) {
+                switch (prog_if) {
+                    case 0x00: return "USB controller (UHCI)";
+                    case 0x10: return "USB controller (OHCI)";
+                    case 0x20: return "USB controller (EHCI)";
+                    case 0x30: return "USB controller (xHCI)";
+                    default: return "USB controller";
+                }
+            }
+            return "serial bus controller";
+        default:
+            return "unknown";
+    }
 }
 
 void outw(uint16_t port, uint16_t value) {
@@ -1409,7 +1464,7 @@ bool ensure_dir(const char* path) {
         return true;
     }
 
-    return kernel::fs::g_fs->mkdir(path) >= 0;
+    return kernel::fs::g_fs->md(path) >= 0;
 }
 
 bool ensure_package_dirs() {
@@ -1725,7 +1780,7 @@ void print_package_catalog(bool installed_only, bool available_only, const char*
     }
 }
 
-void cmd_pkg(ShellContext&, int argc, char* argv[]) {
+void pkg(ShellContext&, int argc, char* argv[]) {
     static const char* kSubcommands[] = {"update", "search", "list", "show", "info", "install", "remove", "files", "policy", "upgrade"};
 
     if (argc < 2) {
@@ -1902,169 +1957,172 @@ void cmd_pkg(ShellContext&, int argc, char* argv[]) {
     }
 }
 
-void cmd_help(ShellContext&, int, char*[]);
-void cmd_clear(ShellContext&, int, char*[]);
-void cmd_whoami(ShellContext&, int, char*[]);
-void cmd_id(ShellContext&, int, char*[]);
-void cmd_pwd(ShellContext&, int, char*[]);
-void cmd_cd(ShellContext&, int, char*[]);
-void cmd_ls(ShellContext&, int, char*[]);
-void cmd_mkdir(ShellContext&, int, char*[]);
-void cmd_rmdir(ShellContext&, int, char*[]);
-void cmd_cat(ShellContext&, int, char*[]);
-void cmd_touch(ShellContext&, int, char*[]);
-void cmd_rm(ShellContext&, int, char*[]);
-void cmd_echo(ShellContext&, int, char*[]);
-void cmd_halt(ShellContext&, int, char*[]);
-void cmd_cp(ShellContext&, int, char*[]);
-void cmd_mv(ShellContext&, int, char*[]);
-void cmd_head(ShellContext&, int, char*[]);
-void cmd_tail(ShellContext&, int, char*[]);
-void cmd_wc(ShellContext&, int, char*[]);
-void cmd_cmp(ShellContext&, int, char*[]);
-void cmd_stat(ShellContext&, int, char*[]);
-void cmd_tree(ShellContext&, int, char*[]);
-void cmd_env(ShellContext&, int, char*[]);
-void cmd_uname(ShellContext&, int, char*[]);
-void cmd_true(ShellContext&, int, char*[]);
-void cmd_false(ShellContext&, int, char*[]);
-void cmd_basename(ShellContext&, int, char*[]);
-void cmd_dirname(ShellContext&, int, char*[]);
-void cmd_exists(ShellContext&, int, char*[]);
-void cmd_isfile(ShellContext&, int, char*[]);
-void cmd_isdir(ShellContext&, int, char*[]);
-void cmd_size(ShellContext&, int, char*[]);
-void cmd_write(ShellContext&, int, char*[]);
-void cmd_append(ShellContext&, int, char*[]);
-void cmd_truncate(ShellContext&, int, char*[]);
-void cmd_nl(ShellContext&, int, char*[]);
-void cmd_hexdump(ShellContext&, int, char*[]);
-void cmd_find(ShellContext&, int, char*[]);
-void cmd_grep(ShellContext&, int, char*[]);
-void cmd_sleep(ShellContext&, int, char*[]);
-void cmd_tick(ShellContext&, int, char*[]);
-void cmd_uptime(ShellContext&, int, char*[]);
-void cmd_ps(ShellContext&, int, char*[]);
-void cmd_meminfo(ShellContext&, int, char*[]);
-void cmd_free(ShellContext&, int, char*[]);
-void cmd_df(ShellContext&, int, char*[]);
-void cmd_lsblk(ShellContext&, int, char*[]);
-void cmd_sync(ShellContext&, int, char*[]);
-void cmd_pathjoin(ShellContext&, int, char*[]);
-void cmd_realpath(ShellContext&, int, char*[]);
-void cmd_seq(ShellContext&, int, char*[]);
-void cmd_repeat(ShellContext&, int, char*[]);
-void cmd_catb(ShellContext&, int, char*[]);
-void cmd_countdir(ShellContext&, int, char*[]);
-void cmd_touchmany(ShellContext&, int, char*[]);
-void cmd_rmmany(ShellContext&, int, char*[]);
-void cmd_cpu(ShellContext&, int, char*[]);
-void cmd_devices(ShellContext&, int, char*[]);
-void cmd_pci(ShellContext&, int, char*[]);
-void cmd_drivers(ShellContext&, int, char*[]);
-void cmd_pkg(ShellContext&, int, char*[]);
-void cmd_reboot(ShellContext&, int, char*[]);
-void cmd_poweroff(ShellContext&, int, char*[]);
-void cmd_exit_shell(ShellContext&, int, char*[]);
-void cmd_history(ShellContext&, int, char*[]);
-void cmd_ahci(ShellContext&, int, char*[]);
+void help(ShellContext&, int, char*[]);
+void clear(ShellContext&, int, char*[]);
+void whoami(ShellContext&, int, char*[]);
+void id(ShellContext&, int, char*[]);
+void pwd(ShellContext&, int, char*[]);
+void cd(ShellContext&, int, char*[]);
+void ld(ShellContext&, int, char*[]);
+void md(ShellContext&, int, char*[]);
+void rd(ShellContext&, int, char*[]);
+void cat(ShellContext&, int, char*[]);
+void touch(ShellContext&, int, char*[]);
+void rm(ShellContext&, int, char*[]);
+void echo(ShellContext&, int, char*[]);
+void halt(ShellContext&, int, char*[]);
+void hid(ShellContext&, int, char*[]);
+void keyboard(ShellContext&, int, char*[]);
+void cp(ShellContext&, int, char*[]);
+void mv(ShellContext&, int, char*[]);
+void head(ShellContext&, int, char*[]);
+void tail(ShellContext&, int, char*[]);
+void wc(ShellContext&, int, char*[]);
+void cmp(ShellContext&, int, char*[]);
+void stat(ShellContext&, int, char*[]);
+void tree(ShellContext&, int, char*[]);
+void env(ShellContext&, int, char*[]);
+void uname(ShellContext&, int, char*[]);
+void ctrue(ShellContext&, int, char*[]);
+void cfalse(ShellContext&, int, char*[]);
+void basename(ShellContext&, int, char*[]);
+void dirname(ShellContext&, int, char*[]);
+void exists(ShellContext&, int, char*[]);
+void isfile(ShellContext&, int, char*[]);
+void isdir(ShellContext&, int, char*[]);
+void size(ShellContext&, int, char*[]);
+void write(ShellContext&, int, char*[]);
+void append(ShellContext&, int, char*[]);
+void truncate(ShellContext&, int, char*[]);
+void nl(ShellContext&, int, char*[]);
+void hexdump(ShellContext&, int, char*[]);
+void find(ShellContext&, int, char*[]);
+void grep(ShellContext&, int, char*[]);
+void sleep(ShellContext&, int, char*[]);
+void tick(ShellContext&, int, char*[]);
+void uptime(ShellContext&, int, char*[]);
+void ps(ShellContext&, int, char*[]);
+void meminfo(ShellContext&, int, char*[]);
+void free(ShellContext&, int, char*[]);
+void df(ShellContext&, int, char*[]);
+void lsblk(ShellContext&, int, char*[]);
+void sync(ShellContext&, int, char*[]);
+void pathjoin(ShellContext&, int, char*[]);
+void realpath(ShellContext&, int, char*[]);
+void seq(ShellContext&, int, char*[]);
+void repeat(ShellContext&, int, char*[]);
+void catb(ShellContext&, int, char*[]);
+void countdir(ShellContext&, int, char*[]);
+void touchmany(ShellContext&, int, char*[]);
+void rmmany(ShellContext&, int, char*[]);
+void cpu(ShellContext&, int, char*[]);
+void devices(ShellContext&, int, char*[]);
+void pci(ShellContext&, int, char*[]);
+void drivers(ShellContext&, int, char*[]);
+void pkg(ShellContext&, int, char*[]);
+void reboot(ShellContext&, int, char*[]);
+void poweroff(ShellContext&, int, char*[]);
+void exit_shell(ShellContext&, int, char*[]);
+void history(ShellContext&, int, char*[]);
+void ahci(ShellContext&, int, char*[]);
 
 #define CMD(name, fn) \
     { name, fn }
 
 const CommandEntry kCommands[] = {
-    CMD("help", cmd_help), CMD("?", cmd_help), CMD("man", cmd_help), CMD("commands", cmd_help),
-    CMD("cmds", cmd_help), CMD("apropos", cmd_help), CMD("usage", cmd_help), CMD("h", cmd_help),
+    CMD("help", help), CMD("?", help), CMD("man", help), CMD("commands", help),
+    CMD("cmds", help), CMD("apropos", help), CMD("usage", help), CMD("h", help),
 
-    CMD("clear", cmd_clear), CMD("cls", cmd_clear), CMD("reset", cmd_clear), CMD("clean", cmd_clear),
-    CMD("wipe", cmd_clear), CMD("screen", cmd_clear),
+    CMD("clear", clear), CMD("cls", clear), CMD("reset", clear), CMD("clean", clear),
+    CMD("wipe", clear), CMD("screen", clear),
 
-    CMD("whoami", cmd_whoami), CMD("iam", cmd_whoami), CMD("user", cmd_whoami), CMD("me", cmd_whoami),
-    CMD("id", cmd_id), CMD("identity", cmd_id), CMD("uidgid", cmd_id),
+    CMD("whoami", whoami), CMD("iam", whoami), CMD("user", whoami), CMD("me", whoami),
+    CMD("id", id), CMD("identity", id), CMD("uidgid", id),
 
-    CMD("pwd", cmd_pwd), CMD("cwd", cmd_pwd), CMD("whereami", cmd_pwd), CMD("here", cmd_pwd),
-    CMD("cd", cmd_cd), CMD("chdir", cmd_cd), CMD("changedir", cmd_cd), CMD("goto", cmd_cd),
+    CMD("pwd", pwd), CMD("cwd", pwd), CMD("whereami", pwd), CMD("here", pwd),
+    CMD("cd", cd), CMD("chdir", cd), CMD("changedir", cd), CMD("goto", cd),
 
-    CMD("ld", cmd_ls), CMD("dir", cmd_ls), CMD("ll", cmd_ls), CMD("la", cmd_ls),
-    CMD("l", cmd_ls), CMD("list", cmd_ls), CMD("listdir", cmd_ls), CMD("contents", cmd_ls),
-    CMD("browse", cmd_ls), CMD("showdir", cmd_ls), CMD("showfiles", cmd_ls), CMD("list-directory", cmd_ls),
+    CMD("ld", ld), CMD("dir", ld), CMD("ll", ld), CMD("la", ld),
+    CMD("l", ld), CMD("list", ld), CMD("listdir", ld), CMD("contents", ld),
+    CMD("browse", ld), CMD("showdir", ld), CMD("showfiles", ld), CMD("list-directory", ld),
 
-    CMD("md", cmd_mkdir), CMD("mk", cmd_mkdir), CMD("makedir", cmd_mkdir),
-    CMD("newdir", cmd_mkdir), CMD("createdir", cmd_mkdir), CMD("create-dir", cmd_mkdir),
+    CMD("md", md), CMD("mk", md), CMD("makedir", md),
+    CMD("newdir", md), CMD("createdir", md), CMD("create-dir", md),
 
-    CMD("rmdir", cmd_rmdir), CMD("rd", cmd_rmdir), CMD("rmd", cmd_rmdir), CMD("removedir", cmd_rmdir),
-    CMD("deldir", cmd_rmdir), CMD("delete-dir", cmd_rmdir), CMD("remove-dir", cmd_rmdir),
+    CMD("rd", rd), CMD("rd", rd), CMD("rmd", rd), CMD("removedir", rd),
+    CMD("deldir", rd), CMD("delete-dir", rd), CMD("remove-dir", rd),
 
-    CMD("cat", cmd_cat), CMD("print", cmd_cat), CMD("type", cmd_cat), CMD("more", cmd_cat),
-    CMD("less", cmd_cat), CMD("show", cmd_cat), CMD("view", cmd_cat), CMD("read", cmd_cat),
-    CMD("display", cmd_cat), CMD("dump", cmd_cat), CMD("readfile", cmd_cat),
+    CMD("cat", cat), CMD("print", cat), CMD("type", cat), CMD("more", cat),
+    CMD("less", cat), CMD("show", cat), CMD("view", cat), CMD("read", cat),
+    CMD("display", cat), CMD("dump", cat), CMD("readfile", cat),
 
-    CMD("touch", cmd_touch), CMD("create", cmd_touch), CMD("newfile", cmd_touch), CMD("mkfile", cmd_touch),
-    CMD("createfile", cmd_touch), CMD("new-file", cmd_touch), CMD("create-file", cmd_touch),
+    CMD("touch", touch), CMD("create", touch), CMD("newfile", touch), CMD("mkfile", touch),
+    CMD("createfile", touch), CMD("new-file", touch), CMD("create-file", touch),
 
-    CMD("rm", cmd_rm), CMD("del", cmd_rm), CMD("erase", cmd_rm), CMD("delete", cmd_rm),
-    CMD("unlink", cmd_rm), CMD("remove", cmd_rm), CMD("trash", cmd_rm),
+    CMD("rm", rm), CMD("del", rm), CMD("erase", rm), CMD("delete", rm),
+    CMD("unlink", rm), CMD("remove", rm), CMD("trash", rm),
 
-    CMD("echo", cmd_echo), CMD("say", cmd_echo), CMD("speak", cmd_echo), CMD("printline", cmd_echo),
-    CMD("printf", cmd_echo),
+    CMD("echo", echo), CMD("say", echo), CMD("speak", echo), CMD("printline", echo),
+    CMD("printf", echo),
 
-    CMD("cp", cmd_cp), CMD("copy", cmd_cp), CMD("duplicate", cmd_cp), CMD("dup", cmd_cp), CMD("clone", cmd_cp),
-    CMD("mv", cmd_mv), CMD("move", cmd_mv), CMD("rename", cmd_mv), CMD("ren", cmd_mv),
+    CMD("cp", cp), CMD("copy", cp), CMD("duplicate", cp), CMD("dup", cp), CMD("clone", cp),
+    CMD("mv", mv), CMD("move", mv), CMD("rename", mv), CMD("ren", mv),
 
-    CMD("head", cmd_head), CMD("first", cmd_head), CMD("top", cmd_head),
-    CMD("tail", cmd_tail), CMD("last", cmd_tail), CMD("bottom", cmd_tail),
-    CMD("wc", cmd_wc), CMD("count", cmd_wc), CMD("metrics", cmd_wc),
-    CMD("cmp", cmd_cmp), CMD("diff", cmd_cmp), CMD("compare", cmd_cmp),
-    CMD("stat", cmd_stat), CMD("info", cmd_stat), CMD("fileinfo", cmd_stat),
-    CMD("status", cmd_stat), CMD("details", cmd_stat),
-    CMD("tree", cmd_tree), CMD("treedir", cmd_tree), CMD("lsr", cmd_tree),
+    CMD("head", head), CMD("first", head), CMD("top", head),
+    CMD("tail", tail), CMD("last", tail), CMD("bottom", tail),
+    CMD("wc", wc), CMD("count", wc), CMD("metrics", wc),
+    CMD("cmp", cmp), CMD("diff", cmp), CMD("compare", cmp),
+    CMD("stat", stat), CMD("info", stat), CMD("fileinfo", stat),
+    CMD("status", stat), CMD("details", stat),
+    CMD("tree", tree), CMD("treedir", tree), CMD("lsr", tree),
 
-    CMD("env", cmd_env), CMD("set", cmd_env), CMD("vars", cmd_env), CMD("printenv", cmd_env),
-    CMD("uname", cmd_uname), CMD("ver", cmd_uname), CMD("version", cmd_uname), CMD("about", cmd_uname),
-    CMD("sysinfo", cmd_uname), CMD("kernel", cmd_uname),
-    CMD("cpu", cmd_cpu), CMD("cpuid", cmd_cpu), CMD("lscpu", cmd_cpu), CMD("hwinfo", cmd_cpu),
-    CMD("lspci", cmd_pci), CMD("pci", cmd_pci),
-    CMD("ahci", cmd_ahci),
-    CMD("devices", cmd_devices), CMD("devs", cmd_devices), CMD("lsdev", cmd_devices), CMD("lsdevices", cmd_devices),
-    CMD("drivers", cmd_drivers), CMD("lsdrv", cmd_drivers), CMD("drvs", cmd_drivers), CMD("modules", cmd_drivers),
-    CMD("history", cmd_history), CMD("hlist", cmd_history),
-    CMD("df", cmd_df), CMD("disk", cmd_df), CMD("storage", cmd_df), CMD("lsdisk", cmd_lsblk), CMD("lsblk", cmd_lsblk), CMD("sync", cmd_sync),
-    CMD("apt", cmd_pkg), CMD("apt-get", cmd_pkg), CMD("pkg", cmd_pkg), CMD("pkgmgr", cmd_pkg),
+    CMD("env", env), CMD("set", env), CMD("vars", env), CMD("printenv", env),
+    CMD("uname", uname), CMD("ver", uname), CMD("version", uname), CMD("about", uname),
+    CMD("sysinfo", uname), CMD("kernel", uname),
+    CMD("cpu", cpu), CMD("cpuid", cpu), CMD("lscpu", cpu), CMD("hwinfo", cpu),
+    CMD("lspci", pci), CMD("pci", pci), CMD("lshid", hid), CMD("lskb", keyboard),
+    CMD("hid", hid), CMD("kbd", keyboard), CMD("keyboard", keyboard),
+    CMD("ahci", ahci),
+    CMD("devices", devices), CMD("devs", devices), CMD("lsdev", devices), CMD("lsdevices", devices),
+    CMD("drivers", drivers), CMD("lsdrv", drivers), CMD("drvs", drivers), CMD("modules", drivers),
+    CMD("history", history), CMD("hlist", history),
+    CMD("df", df), CMD("disk", df), CMD("storage", df), CMD("lsdisk", lsblk), CMD("lsblk", lsblk), CMD("sync", sync),
+    CMD("apt", pkg), CMD("apt-get", pkg), CMD("pkg", pkg), CMD("pkgmgr", pkg),
 
-    CMD("basename", cmd_basename), CMD("base", cmd_basename),
-    CMD("dirname", cmd_dirname), CMD("dirbase", cmd_dirname),
-    CMD("exists", cmd_exists), CMD("test-exists", cmd_exists),
-    CMD("isfile", cmd_isfile), CMD("test-file", cmd_isfile),
-    CMD("isdir", cmd_isdir), CMD("test-dir", cmd_isdir),
-    CMD("size", cmd_size), CMD("filesize", cmd_size),
-    CMD("write", cmd_write), CMD("overwrite", cmd_write),
-    CMD("append", cmd_append), CMD("appendfile", cmd_append),
-    CMD("truncate", cmd_truncate), CMD("truncatefile", cmd_truncate),
-    CMD("nl", cmd_nl), CMD("number-lines", cmd_nl),
-    CMD("hexdump", cmd_hexdump), CMD("xxd", cmd_hexdump),
-    CMD("find", cmd_find), CMD("walk", cmd_find),
-    CMD("grep", cmd_grep), CMD("search", cmd_grep),
-    CMD("sleep", cmd_sleep), CMD("pause", cmd_sleep),
-    CMD("tick", cmd_tick), CMD("ticks", cmd_tick),
-    CMD("uptime", cmd_uptime), CMD("up", cmd_uptime),
-    CMD("ps", cmd_ps), CMD("proc", cmd_ps), CMD("tasks", cmd_ps),
-    CMD("meminfo", cmd_meminfo), CMD("mem", cmd_meminfo), CMD("free", cmd_free),
-    CMD("pathjoin", cmd_pathjoin), CMD("joinpath", cmd_pathjoin),
-    CMD("realpath", cmd_realpath), CMD("normpath", cmd_realpath),
-    CMD("seq", cmd_seq), CMD("range", cmd_seq),
-    CMD("repeat", cmd_repeat), CMD("repeattext", cmd_repeat),
-    CMD("catb", cmd_catb), CMD("catraw", cmd_catb),
-    CMD("countdir", cmd_countdir), CMD("dircount", cmd_countdir),
-    CMD("touchmany", cmd_touchmany), CMD("mkfiles", cmd_touchmany),
-    CMD("rmmany", cmd_rmmany), CMD("rmfiles", cmd_rmmany),
+    CMD("basename", basename), CMD("base", basename),
+    CMD("dirname", dirname), CMD("dirbase", dirname),
+    CMD("exists", exists), CMD("test-exists", exists),
+    CMD("isfile", isfile), CMD("test-file", isfile),
+    CMD("isdir", isdir), CMD("test-dir", isdir),
+    CMD("size", size), CMD("filesize", size),
+    CMD("write", write), CMD("overwrite", write),
+    CMD("append", append), CMD("appendfile", append),
+    CMD("truncate", truncate), CMD("truncatefile", truncate),
+    CMD("nl", nl), CMD("number-lines", nl),
+    CMD("hexdump", hexdump), CMD("xxd", hexdump),
+    CMD("find", find), CMD("walk", find),
+    CMD("grep", grep), CMD("search", grep),
+    CMD("sleep", sleep), CMD("pause", sleep),
+    CMD("tick", tick), CMD("ticks", tick),
+    CMD("uptime", uptime), CMD("up", uptime),
+    CMD("ps", ps), CMD("proc", ps), CMD("tasks", ps),
+    CMD("meminfo", meminfo), CMD("mem", meminfo), CMD("free", free),
+    CMD("pathjoin", pathjoin), CMD("joinpath", pathjoin),
+    CMD("realpath", realpath), CMD("normpath", realpath),
+    CMD("seq", seq), CMD("range", seq),
+    CMD("repeat", repeat), CMD("repeattext", repeat),
+    CMD("catb", catb), CMD("catraw", catb),
+    CMD("countdir", countdir), CMD("dircount", countdir),
+    CMD("touchmany", touchmany), CMD("mkfiles", touchmany),
+    CMD("rmmany", rmmany), CMD("rmfiles", rmmany),
 
-    CMD("true", cmd_true), CMD("yescmd", cmd_true),
-    CMD("false", cmd_false), CMD("nocmd", cmd_false),
+    CMD("true", ctrue), CMD("yes", ctrue),
+    CMD("false", cfalse), CMD("no", cfalse),
 
-    CMD("halt", cmd_halt), CMD("exit", cmd_exit_shell), CMD("quit", cmd_exit_shell), CMD("shutdown", cmd_poweroff),
-    CMD("poweroff", cmd_poweroff), CMD("stop", cmd_halt), CMD("off", cmd_halt),
-    CMD("powerdown", cmd_halt), CMD("reboot", cmd_reboot), CMD("restart", cmd_reboot),
-    CMD("warmboot", cmd_reboot), CMD("reset-machine", cmd_reboot),
+    CMD("halt", halt), CMD("exit", exit_shell), CMD("quit", exit_shell), CMD("logoff", exit_shell),
+    CMD("shutdown", poweroff), CMD("stdn", poweroff), CMD("poweroff", poweroff), CMD("stop", halt), CMD("off", halt),
+    CMD("powerdown", halt), CMD("reboot", reboot), CMD("restart", reboot), CMD("rbt", reboot),
+    CMD("warmboot", reboot), CMD("reset-machine", reboot),
 };
 
 constexpr uint32_t kCommandCount = static_cast<uint32_t>(sizeof(kCommands) / sizeof(kCommands[0]));
@@ -2111,7 +2169,7 @@ const char* suggest_command(const char* name) {
     return nullptr;
 }
 
-void cmd_help(ShellContext&, int argc, char* argv[]) {
+void help(ShellContext&, int argc, char* argv[]) {
     const char* group = (argc >= 2) ? argv[1] : nullptr;
     kernel::serial::write("shell commands loaded: ");
     
@@ -2121,7 +2179,7 @@ void cmd_help(ShellContext&, int argc, char* argv[]) {
     kernel::serial::write("groups: core | fs | system | info | power\n");
     
     if (group == nullptr || text_equal(group, "all") || text_equal(group, "core")) {
-        kernel::serial::write("core: ld dir cd pwd mkdir/md rmdir/rd cat/print touch rm echo cp mv head tail wc cmp stat tree env uname id whoami clear\n");
+        kernel::serial::write("core: ld dir cd pwd md/md rd/rd cat/print touch rm echo cp mv head tail wc cmp stat tree env uname id whoami clear\n");
     }
     
     if (group == nullptr || text_equal(group, "all") || text_equal(group, "fs")) {
@@ -2145,17 +2203,17 @@ void cmd_help(ShellContext&, int argc, char* argv[]) {
     }
 }
 
-void cmd_clear(ShellContext&, int, char*[]) {
+void clear(ShellContext&, int, char*[]) {
     for (uint32_t i = 0; i < 30; ++i) {
         kernel::serial::write("\r\n");
     }
 }
 
-void cmd_whoami(ShellContext&, int, char*[]) {
+void whoami(ShellContext&, int, char*[]) {
     kernel::serial::write("root\n");
 }
 
-void cmd_id(ShellContext&, int, char*[]) {
+void id(ShellContext&, int, char*[]) {
     kernel::serial::write("uid=");
     kernel::serial::write_hex(kernel::task::scheduler::current_user_id());
     kernel::serial::write(" gid=");
@@ -2163,12 +2221,12 @@ void cmd_id(ShellContext&, int, char*[]) {
     kernel::serial::write("\n");
 }
 
-void cmd_pwd(ShellContext& ctx, int, char*[]) {
+void pwd(ShellContext& ctx, int, char*[]) {
     kernel::serial::write(ctx.cwd);
     kernel::serial::write("\n");
 }
 
-void cmd_cd(ShellContext& ctx, int argc, char* argv[]) {
+void cd(ShellContext& ctx, int argc, char* argv[]) {
     if (argc < 2) {
         copy_text(ctx.cwd, "/root", sizeof(ctx.cwd));
         return;
@@ -2190,7 +2248,7 @@ void cmd_cd(ShellContext& ctx, int argc, char* argv[]) {
     kernel::serial::write("cd: directory not found\n");
 }
 
-void cmd_ls(ShellContext& ctx, int argc, char* argv[]) {
+void ld(ShellContext& ctx, int argc, char* argv[]) {
     if (kernel::fs::g_fs == nullptr) {
         kernel::serial::write("fs unavailable\n");
         return;
@@ -2217,13 +2275,14 @@ void cmd_ls(ShellContext& ctx, int argc, char* argv[]) {
     for (int i = 0; i < n; ++i) {
         kernel::serial::write(entries[i].is_directory != 0 ? "d " : "f ");
         kernel::serial::write(entries[i].name);
+        kernel::serial::write("\n");
     }
 
     kernel::serial::write("\r\n");
 
 }
 
-void cmd_mkdir(ShellContext& ctx, int argc, char* argv[]) {
+void md(ShellContext& ctx, int argc, char* argv[]) {
     if (kernel::fs::g_fs == nullptr) {
         kernel::serial::write("fs unavailable\n");
         return;
@@ -2231,16 +2290,16 @@ void cmd_mkdir(ShellContext& ctx, int argc, char* argv[]) {
     
     char path[kMaxPath];
     
-    if (argc < 2 || !arg_to_path(ctx, argv[1], path, "mkdir <dir>")) {
+    if (argc < 2 || !arg_to_path(ctx, argv[1], path, "md <dir>")) {
         return;
     }
     
-    if (kernel::fs::g_fs->mkdir(path) < 0) {
-        kernel::serial::write("mkdir: failed\n");
+    if (kernel::fs::g_fs->md(path) < 0) {
+        kernel::serial::write("md: failed\n");
     }
 }
 
-void cmd_rmdir(ShellContext& ctx, int argc, char* argv[]) {
+void rd(ShellContext& ctx, int argc, char* argv[]) {
     if (kernel::fs::g_fs == nullptr) {
         kernel::serial::write("fs unavailable\n");
         return;
@@ -2248,16 +2307,16 @@ void cmd_rmdir(ShellContext& ctx, int argc, char* argv[]) {
     
     char path[kMaxPath];
     
-    if (argc < 2 || !arg_to_path(ctx, argv[1], path, "rmdir <dir>")) {
+    if (argc < 2 || !arg_to_path(ctx, argv[1], path, "rd <dir>")) {
         return;
     }
     
-    if (kernel::fs::g_fs->rmdir(path) < 0) {
-        kernel::serial::write("rmdir: failed (non-empty or missing)\n");
+    if (kernel::fs::g_fs->rd(path) < 0) {
+        kernel::serial::write("rd: failed (non-empty or missing)\n");
     }
 }
 
-void cmd_cat(ShellContext& ctx, int argc, char* argv[]) {
+void cat(ShellContext& ctx, int argc, char* argv[]) {
     if (kernel::fs::g_fs == nullptr) {
         kernel::serial::write("fs unavailable\n");
         return;
@@ -2298,7 +2357,7 @@ void cmd_cat(ShellContext& ctx, int argc, char* argv[]) {
     kernel::serial::write("\n");
 }
 
-void cmd_touch(ShellContext& ctx, int argc, char* argv[]) {
+void touch(ShellContext& ctx, int argc, char* argv[]) {
     if (kernel::fs::g_fs == nullptr) {
         kernel::serial::write("fs unavailable\n");
         return;
@@ -2320,7 +2379,7 @@ void cmd_touch(ShellContext& ctx, int argc, char* argv[]) {
     kernel::fs::g_fs->close(fd);
 }
 
-void cmd_rm(ShellContext& ctx, int argc, char* argv[]) {
+void rm(ShellContext& ctx, int argc, char* argv[]) {
 
     if (kernel::fs::g_fs == nullptr) {
         kernel::serial::write("fs unavailable\n");
@@ -2338,7 +2397,7 @@ void cmd_rm(ShellContext& ctx, int argc, char* argv[]) {
     }
 }
 
-void cmd_echo(ShellContext&, int argc, char* argv[]) {
+void echo(ShellContext&, int argc, char* argv[]) {
 
     for (int i = 1; i < argc; ++i) {
 
@@ -2352,27 +2411,27 @@ void cmd_echo(ShellContext&, int argc, char* argv[]) {
     kernel::serial::write("\n");
 }
 
-void cmd_halt(ShellContext&, int, char*[]) {
+void halt(ShellContext&, int, char*[]) {
     write_line("powering off");
     machine_poweroff();
 }
 
-void cmd_exit_shell(ShellContext& ctx, int, char*[]) {
+void exit_shell(ShellContext& ctx, int, char*[]) {
     kernel::serial::write("leaving shell\n");
     ctx.running = false;
 }
 
-void cmd_reboot(ShellContext&, int, char*[]) {
+void reboot(ShellContext&, int, char*[]) {
     write_line("rebooting");
     machine_reboot();
 }
 
-void cmd_poweroff(ShellContext&, int, char*[]) {
+void poweroff(ShellContext&, int, char*[]) {
     write_line("powering off");
     machine_poweroff();
 }
 
-void cmd_history(ShellContext&, int, char*[]) {
+void history(ShellContext&, int, char*[]) {
     const uint32_t size = history_size();
 
     if (size == 0) {
@@ -2396,7 +2455,7 @@ void cmd_history(ShellContext&, int, char*[]) {
     }
 }
 
-void cmd_cpu(ShellContext&, int argc, char* argv[]) {
+void cpu(ShellContext&, int argc, char* argv[]) {
 
     if (argc > 1 && text_equal(argv[1], "raw")) {
         uint32_t eax = 0, ebx = 0, ecx = 0, edx = 0;
@@ -2447,6 +2506,26 @@ void cmd_cpu(ShellContext&, int argc, char* argv[]) {
 
     cpuid(1, 0, eax, ebx, ecx, edx);
 
+    const uint32_t stepping = eax & 0xFu;
+    const uint32_t model = (eax >> 4) & 0xFu;
+    const uint32_t family = (eax >> 8) & 0xFu;
+    const uint32_t ext_model = (eax >> 16) & 0xFu;
+    const uint32_t ext_family = (eax >> 20) & 0xFFu;
+    const uint32_t display_family = (family == 0xFu) ? (family + ext_family) : family;
+    const uint32_t display_model = model + ((family == 0x6u || family == 0xFu) ? (ext_model << 4) : 0u);
+
+    kernel::serial::write("signature: family=");
+    write_dec(display_family);
+    kernel::serial::write(" model=");
+    write_dec(display_model);
+    kernel::serial::write(" stepping=");
+    write_dec(stepping);
+    kernel::serial::write(" logical_cpus=");
+    write_dec((ebx >> 16) & 0xFFu);
+    kernel::serial::write(" apic_id=");
+    write_dec((ebx >> 24) & 0xFFu);
+    kernel::serial::write("\n");
+
     kernel::serial::write("family/model/stepping: 0x");
     kernel::serial::write_hex(eax);
 
@@ -2492,17 +2571,42 @@ void cmd_cpu(ShellContext&, int argc, char* argv[]) {
     }
 }
 
-void cmd_devices(ShellContext&, int, char*[]) {
+void devices(ShellContext&, int, char*[]) {
     kernel::serial::write("devices:\n");
-    kernel::serial::write("- serial0 (console)\n");
-    kernel::serial::write("- pic0 / pit0\n");
+    kernel::serial::write("- serial0 (console I/O)\n");
+    kernel::serial::write("- ps/2 keyboard input\n");
+    kernel::serial::write("- PCI bus scanner\n");
+    kernel::serial::write("- xHCI controller: ");
+    kernel::serial::write(kernel::xhci::ready() ? "ready\n" : "unavailable\n");
+    kernel::serial::write("- USB mass storage: ");
+    kernel::serial::write(kernel::usbms::present() ? "present\n" : "unavailable\n");
+    kernel::serial::write("- primary block device: ");
+    kernel::serial::write(kernel::block_get_primary() != nullptr ? "registered\n" : "none\n");
     kernel::serial::write("- ramfs rootfs\n");
     kernel::serial::write("- syscall ABI\n");
     kernel::serial::write("- scheduler / tasks\n");
     kernel::serial::write("- gdt / idt / tss\n");
 }
 
-void cmd_drivers(ShellContext&, int, char*[]) {
+void hid(ShellContext&, int, char*[]) {
+    kernel::serial::write("hid/input:\n");
+    kernel::serial::write("- serial console input\n");
+    kernel::serial::write("- ps/2 keyboard polling\n");
+    kernel::serial::write("- xHCI controller: ");
+    kernel::serial::write(kernel::xhci::ready() ? "ready\n" : "unavailable\n");
+    kernel::serial::write("- USB HID: not enumerated yet\n");
+    kernel::serial::write("- USB mass storage: ");
+    kernel::serial::write(kernel::usbms::present() ? "present\n" : "unavailable\n");
+}
+
+void keyboard(ShellContext&, int, char*[]) {
+    kernel::serial::write("keyboard:\n");
+    kernel::serial::write("- PS/2 scan polling enabled\n");
+    kernel::serial::write("- line editing enabled\n");
+    kernel::serial::write("- console backend: serial + VGA\n");
+}
+
+void drivers(ShellContext&, int, char*[]) {
     kernel::serial::write("drivers:\n");
     kernel::serial::write("- serial\n");
     kernel::serial::write("- gdt/tss\n");
@@ -2517,7 +2621,7 @@ void cmd_drivers(ShellContext&, int, char*[]) {
     kernel::serial::write("- scheduler\n");
 }
 
-void cmd_pci(ShellContext&, int, char*[]) {
+void pci(ShellContext&, int, char*[]) {
     kernel::pci::Device devs[64];
     uint32_t found = 0;
 
@@ -2536,27 +2640,58 @@ void cmd_pci(ShellContext&, int, char*[]) {
         kernel::serial::write(".");
         write_dec(d.func);
 
-        kernel::serial::write(" vendor=0x");
+        kernel::serial::write(" ");
+        const char* vendor_name = pci_vendor_name(d.vendor_id);
+
+        if (vendor_name != nullptr) {
+            kernel::serial::write(vendor_name);
+            kernel::serial::write(" ");
+        }
+
+        kernel::serial::write("vendor=0x");
         kernel::serial::write_hex(d.vendor_id);
         kernel::serial::write(" device=0x");
         kernel::serial::write_hex(d.device_id);
 
-        kernel::serial::write(" class=0x");
+        kernel::serial::write(" class=");
+        kernel::serial::write(pci_class_name(d.class_code, d.subclass, d.prog_if));
+        kernel::serial::write(" [0x");
         kernel::serial::write_hex(d.class_code);
-        kernel::serial::write(" sub=0x");
+        kernel::serial::write("/0x");
         kernel::serial::write_hex(d.subclass);
-        kernel::serial::write(" progif=0x");
+        kernel::serial::write("/0x");
         kernel::serial::write_hex(d.prog_if);
+        kernel::serial::write("]");
 
         kernel::serial::write(" irq=");
         write_dec(d.irq);
 
         for (int b = 0; b < 6; ++b) {
-            if (d.bar[b] != 0u) {
-                kernel::serial::write("  BAR");
-                write_dec(static_cast<uint32_t>(b));
-                kernel::serial::write("=0x");
-                kernel::serial::write_hex(d.bar[b]);
+            const uint32_t raw = d.bar[b];
+
+            if (raw == 0u) {
+                continue;
+            }
+
+            kernel::serial::write("  BAR");
+            write_dec(static_cast<uint32_t>(b));
+
+            if ((raw & 1u) != 0u) {
+                kernel::serial::write(" io=0x");
+                kernel::serial::write_hex(raw & ~0x3u);
+                continue;
+            }
+
+            const bool is_64bit = ((raw & 0x6u) == 0x4u) && (b + 1 < 6);
+
+            if (is_64bit) {
+                const uint64_t addr = (static_cast<uint64_t>(d.bar[b + 1]) << 32) | static_cast<uint64_t>(raw & ~0xFu);
+                kernel::serial::write(" mmio64=");
+                kernel::serial::write_hex64(addr);
+                ++b;
+            } else {
+                kernel::serial::write(" mmio=0x");
+                kernel::serial::write_hex(raw & ~0xFu);
             }
         }
 
@@ -2564,11 +2699,11 @@ void cmd_pci(ShellContext&, int, char*[]) {
     }
 }
 
-void cmd_ahci(ShellContext&, int, char*[]) {
+void ahci(ShellContext&, int, char*[]) {
     kernel::ahci::print_info();
 }
 
-void cmd_cp(ShellContext& ctx, int argc, char* argv[]) {
+void cp(ShellContext& ctx, int argc, char* argv[]) {
     if (kernel::fs::g_fs == nullptr) {
         kernel::serial::write("fs unavailable\n");
         return;
@@ -2622,14 +2757,14 @@ void cmd_cp(ShellContext& ctx, int argc, char* argv[]) {
     kernel::fs::g_fs->close(dst_fd);
 }
 
-void cmd_mv(ShellContext& ctx, int argc, char* argv[]) {
+void mv(ShellContext& ctx, int argc, char* argv[]) {
 
     if (argc < 3) {
         kernel::serial::write("mv <src> <dst>\n");
         return;
     }
 
-    cmd_cp(ctx, argc, argv);
+    cp(ctx, argc, argv);
     char src[kMaxPath];
 
     if (!arg_to_path(ctx, argv[1], src, "mv <src> <dst>")) {
@@ -2641,7 +2776,7 @@ void cmd_mv(ShellContext& ctx, int argc, char* argv[]) {
     }
 }
 
-void cmd_head(ShellContext& ctx, int argc, char* argv[]) {
+void head(ShellContext& ctx, int argc, char* argv[]) {
     if (argc < 2) {
         kernel::serial::write("head <file> [lines]\n");
         return;
@@ -2665,7 +2800,7 @@ void cmd_head(ShellContext& ctx, int argc, char* argv[]) {
     kernel::serial::write("\n");
 }
 
-void cmd_tail(ShellContext& ctx, int argc, char* argv[]) {
+void tail(ShellContext& ctx, int argc, char* argv[]) {
     if (argc < 2) {
         kernel::serial::write("tail <file> [lines]\n");
         return;
@@ -2687,7 +2822,7 @@ void cmd_tail(ShellContext& ctx, int argc, char* argv[]) {
     kernel::serial::write("\n");
 }
 
-void cmd_wc(ShellContext& ctx, int argc, char* argv[]) {
+void wc(ShellContext& ctx, int argc, char* argv[]) {
 
     if (argc < 2) {
         kernel::serial::write("wc <file>\n");
@@ -2759,7 +2894,7 @@ void cmd_wc(ShellContext& ctx, int argc, char* argv[]) {
     kernel::serial::write("\n");
 }
 
-void cmd_cmp(ShellContext& ctx, int argc, char* argv[]) {
+void cmp(ShellContext& ctx, int argc, char* argv[]) {
     if (argc < 3) {
         kernel::serial::write("cmp <file1> <file2>\n");
         return;
@@ -2825,7 +2960,7 @@ void cmd_cmp(ShellContext& ctx, int argc, char* argv[]) {
     kernel::serial::write(same ? "cmp: equal\n" : "cmp: different\n");
 }
 
-void cmd_stat(ShellContext& ctx, int argc, char* argv[]) {
+void stat(ShellContext& ctx, int argc, char* argv[]) {
     if (argc < 2) {
         kernel::serial::write("stat <path>\n");
         return;
@@ -2923,7 +3058,7 @@ void tree_walk(const char* path, uint32_t depth) {
     }
 }
 
-void cmd_tree(ShellContext& ctx, int argc, char* argv[]) {
+void tree(ShellContext& ctx, int argc, char* argv[]) {
     char path[kMaxPath];
 
     if (argc < 2) {
@@ -2939,7 +3074,7 @@ void cmd_tree(ShellContext& ctx, int argc, char* argv[]) {
     tree_walk(path, 1);
 }
 
-void cmd_env(ShellContext& ctx, int, char*[]) {
+void env(ShellContext& ctx, int, char*[]) {
     kernel::serial::write("USER=root\n");
     kernel::serial::write("HOME=/root\n");
     kernel::serial::write("PWD=");
@@ -2984,7 +3119,7 @@ void uname_print_field(const char* key, const char* value, bool& first) {
     (void)key;
 }
 
-void cmd_uname(ShellContext&, int argc, char* argv[]) {
+void uname(ShellContext&, int argc, char* argv[]) {
     const bool all = (argc <= 1) || uname_flag_present(argc, argv, 'a');
     const bool show_sysname = all || uname_flag_present(argc, argv, 's');
     const bool show_nodename = all || uname_flag_present(argc, argv, 'n');
@@ -3040,15 +3175,15 @@ void cmd_uname(ShellContext&, int argc, char* argv[]) {
     kernel::serial::write("\n");
 }
 
-void cmd_true(ShellContext&, int, char*[]) {
+void ctrue(ShellContext&, int, char*[]) {
     kernel::serial::write("true\n");
 }
 
-void cmd_false(ShellContext&, int, char*[]) {
+void cfalse(ShellContext&, int, char*[]) {
     kernel::serial::write("false\n");
 }
 
-void cmd_basename(ShellContext& ctx, int argc, char* argv[]) {
+void basename(ShellContext& ctx, int argc, char* argv[]) {
     const char* in = (argc >= 2) ? argv[1] : ctx.cwd;
     char path[kMaxPath];
 
@@ -3065,7 +3200,7 @@ void cmd_basename(ShellContext& ctx, int argc, char* argv[]) {
     kernel::serial::write("\n");
 }
 
-void cmd_dirname(ShellContext& ctx, int argc, char* argv[]) {
+void dirname(ShellContext& ctx, int argc, char* argv[]) {
     const char* in = (argc >= 2) ? argv[1] : ctx.cwd;
 
     char path[kMaxPath];
@@ -3086,7 +3221,7 @@ void cmd_dirname(ShellContext& ctx, int argc, char* argv[]) {
     kernel::serial::write("\n");
 }
 
-void cmd_exists(ShellContext& ctx, int argc, char* argv[]) {
+void exists(ShellContext& ctx, int argc, char* argv[]) {
     char path[kMaxPath];
 
     if (argc < 2 || !arg_to_path(ctx, argv[1], path, "exists <path>")) {
@@ -3096,7 +3231,7 @@ void cmd_exists(ShellContext& ctx, int argc, char* argv[]) {
     kernel::serial::write(path_exists(path) ? "yes\n" : "no\n");
 }
 
-void cmd_isfile(ShellContext& ctx, int argc, char* argv[]) {
+void isfile(ShellContext& ctx, int argc, char* argv[]) {
     char path[kMaxPath];
 
     if (argc < 2 || !arg_to_path(ctx, argv[1], path, "isfile <path>")) {
@@ -3106,7 +3241,7 @@ void cmd_isfile(ShellContext& ctx, int argc, char* argv[]) {
     kernel::serial::write(is_regular_file(path) ? "yes\n" : "no\n");
 }
 
-void cmd_isdir(ShellContext& ctx, int argc, char* argv[]) {
+void isdir(ShellContext& ctx, int argc, char* argv[]) {
     char path[kMaxPath];
 
     if (argc < 2 || !arg_to_path(ctx, argv[1], path, "isdir <path>")) {
@@ -3116,7 +3251,7 @@ void cmd_isdir(ShellContext& ctx, int argc, char* argv[]) {
     kernel::serial::write(is_directory(path) ? "yes\n" : "no\n");
 }
 
-void cmd_size(ShellContext& ctx, int argc, char* argv[]) {
+void size(ShellContext& ctx, int argc, char* argv[]) {
     char path[kMaxPath];
 
     if (argc < 2 || !arg_to_path(ctx, argv[1], path, "size <file>")) {
@@ -3135,7 +3270,7 @@ void cmd_size(ShellContext& ctx, int argc, char* argv[]) {
     kernel::serial::write("\n");
 }
 
-void cmd_write(ShellContext& ctx, int argc, char* argv[]) {
+void write(ShellContext& ctx, int argc, char* argv[]) {
     char path[kMaxPath];
 
     if (argc < 3 || !arg_to_path(ctx, argv[1], path, "write <file> <text...>")) {
@@ -3151,7 +3286,7 @@ void cmd_write(ShellContext& ctx, int argc, char* argv[]) {
     }
 }
 
-void cmd_append(ShellContext& ctx, int argc, char* argv[]) {
+void append(ShellContext& ctx, int argc, char* argv[]) {
     char path[kMaxPath];
 
     if (argc < 3 || !arg_to_path(ctx, argv[1], path, "append <file> <text...>")) {
@@ -3167,7 +3302,7 @@ void cmd_append(ShellContext& ctx, int argc, char* argv[]) {
     }
 }
 
-void cmd_truncate(ShellContext& ctx, int argc, char* argv[]) {
+void truncate(ShellContext& ctx, int argc, char* argv[]) {
     char path[kMaxPath];
 
     if (argc < 2 || !arg_to_path(ctx, argv[1], path, "truncate <file>")) {
@@ -3179,7 +3314,7 @@ void cmd_truncate(ShellContext& ctx, int argc, char* argv[]) {
     }
 }
 
-void cmd_nl(ShellContext& ctx, int argc, char* argv[]) {
+void nl(ShellContext& ctx, int argc, char* argv[]) {
     if (kernel::fs::g_fs == nullptr) {
         kernel::serial::write("fs unavailable\n");
         return;
@@ -3226,7 +3361,7 @@ void cmd_nl(ShellContext& ctx, int argc, char* argv[]) {
     kernel::serial::write("\n");
 }
 
-void cmd_hexdump(ShellContext& ctx, int argc, char* argv[]) {
+void hexdump(ShellContext& ctx, int argc, char* argv[]) {
 
     if (kernel::fs::g_fs == nullptr) {
         kernel::serial::write("fs unavailable\n");
@@ -3344,7 +3479,7 @@ void find_walk(const char* path, const char* needle, uint32_t depth) {
     }
 }
 
-void cmd_find(ShellContext& ctx, int argc, char* argv[]) {
+void find(ShellContext& ctx, int argc, char* argv[]) {
     char path[kMaxPath];
     const char* needle = "";
 
@@ -3363,7 +3498,7 @@ void cmd_find(ShellContext& ctx, int argc, char* argv[]) {
     find_walk(path, needle, 0);
 }
 
-void cmd_grep(ShellContext& ctx, int argc, char* argv[]) {
+void grep(ShellContext& ctx, int argc, char* argv[]) {
     if (kernel::fs::g_fs == nullptr) {
         kernel::serial::write("fs unavailable\n");
         return;
@@ -3410,7 +3545,7 @@ void cmd_grep(ShellContext& ctx, int argc, char* argv[]) {
     }
 }
 
-void cmd_sleep(ShellContext&, int argc, char* argv[]) {
+void sleep(ShellContext&, int argc, char* argv[]) {
     uint32_t ticks = 10;
 
     if (argc >= 2 && !parse_u32(argv[1], &ticks)) {
@@ -3425,12 +3560,12 @@ void cmd_sleep(ShellContext&, int argc, char* argv[]) {
     }
 }
 
-void cmd_tick(ShellContext&, int, char*[]) {
+void tick(ShellContext&, int, char*[]) {
     write_dec(kernel::arch::x86::interrupts::ticks());
     kernel::serial::write("\n");
 }
 
-void cmd_uptime(ShellContext&, int, char*[]) {
+void uptime(ShellContext&, int, char*[]) {
     const uint32_t ticks = kernel::arch::x86::interrupts::ticks();
     kernel::serial::write("ticks=");
     write_dec(ticks);
@@ -3441,7 +3576,7 @@ void cmd_uptime(ShellContext&, int, char*[]) {
     kernel::serial::write("\n");
 }
 
-void cmd_ps(ShellContext&, int, char*[]) {
+void ps(ShellContext&, int, char*[]) {
     kernel::serial::write("pid=");
     write_dec(kernel::task::scheduler::current_process_id());
 
@@ -3460,7 +3595,7 @@ void cmd_ps(ShellContext&, int, char*[]) {
     kernel::serial::write("\n");
 }
 
-void cmd_meminfo(ShellContext&, int, char*[]) {
+void meminfo(ShellContext&, int, char*[]) {
     kernel::serial::write("heap_used=");
     write_dec(kernel::mm::heap::used_bytes());
 
@@ -3476,7 +3611,7 @@ void cmd_meminfo(ShellContext&, int, char*[]) {
     kernel::serial::write("\n");
 }
 
-void cmd_free(ShellContext&, int, char*[]) {
+void free(ShellContext&, int, char*[]) {
     constexpr uint32_t kPageSize = 4096u;
     const uint32_t total_frames = kernel::mm::pmm::total_frames();
     const uint32_t free_frames = kernel::mm::pmm::free_frames();
@@ -3520,7 +3655,7 @@ void cmd_free(ShellContext&, int, char*[]) {
     kernel::serial::write("\n");
 }
 
-void cmd_df(ShellContext&, int, char*[]) {
+void df(ShellContext&, int, char*[]) {
     kernel::serial::write("storage_ready=");
     kernel::serial::write(kernel::storage_ready() ? "yes" : "no");
     kernel::serial::write(" data_start_lba=");
@@ -3538,50 +3673,55 @@ void cmd_df(ShellContext&, int, char*[]) {
     kernel::serial::write("\n");
 }
 
-void cmd_lsblk(ShellContext&, int, char*[]) {
-    uint8_t iddata[512] = {};
+void lsblk(ShellContext&, int, char*[]) {
+    kernel::serial::write("NAME\tSIZE\tBLOCK\tTYPE\tSOURCE\n");
 
-    if (!kernel::drivers::ide_identify(iddata)) {
-        kernel::serial::write("lsblk: no IDE disk present\n");
-        return;
-    }
+    bool any = false;
 
-    // model string is in words 27..46 (40 bytes), each word is byte-swapped
-    char model[41] = {};
-    for (int w = 27; w <= 46; ++w) {
-        const int base = (w - 27) * 2;
-        model[base + 0] = static_cast<char>(iddata[w * 2 + 1]);
-        model[base + 1] = static_cast<char>(iddata[w * 2 + 0]);
-    }
+    kernel::block_visit_devices([](kernel::BlockDevice* dev, void* user_data) {
+        bool* any = reinterpret_cast<bool*>(user_data);
 
-    // trim trailing spaces
-    for (int i = 39; i >= 0; --i) {
-        if (model[i] == ' ' || model[i] == '\0') {
-            model[i] = '\0';
-        } else {
-            break;
+        if (dev == nullptr) {
+            return;
         }
+
+        *any = true;
+
+        kernel::serial::write(dev->name != nullptr ? dev->name : "unnamed");
+        kernel::serial::write("\t");
+
+        if (dev->block_count == 0u || dev->block_size == 0u) {
+            kernel::serial::write("unknown\t");
+
+        } else {
+            const uint64_t bytes = dev->block_count * static_cast<uint64_t>(dev->block_size);
+            const uint64_t mib = bytes / (1024ull * 1024ull);
+
+            if (mib > 0u) {
+                write_dec(static_cast<uint32_t>(mib));
+                kernel::serial::write(" MiB\t");
+
+            } else {
+                const uint64_t kib = bytes / 1024ull;
+                write_dec(static_cast<uint32_t>(kib));
+                kernel::serial::write(" KiB\t");
+            }
+        }
+
+        write_dec(dev->block_size);
+        kernel::serial::write("\t disk\tdevice\n");
+    }, &any);
+
+    if (!any) {
+        kernel::serial::write("lsdisk: no block device registered\n");
     }
-
-    // total user-addressable sectors (28-bit) at words 60..61 (offset 120)
-    uint32_t sectors = *(uint32_t*)(iddata + 120);
-    uint32_t kib = sectors / 2; // sectors*512 / 1024 = sectors/2
-
-    kernel::serial::write("NAME\tSIZE\tTYPE\n");
-    kernel::serial::write("hd0\t");
-    write_dec(kib);
-    kernel::serial::write(" KiB\t disk\n");
-
-    kernel::serial::write("MODEL: ");
-    kernel::serial::write(model);
-    kernel::serial::write("\n");
 }
 
-void cmd_sync(ShellContext&, int, char*[]) {
+void sync(ShellContext&, int, char*[]) {
     kernel::serial::write("sync: storage writes are immediate on this build\n");
 }
 
-void cmd_pathjoin(ShellContext& ctx, int argc, char* argv[]) {
+void pathjoin(ShellContext& ctx, int argc, char* argv[]) {
 
     if (argc < 3) {
         kernel::serial::write("pathjoin <a> <b>\n");
@@ -3604,7 +3744,7 @@ void cmd_pathjoin(ShellContext& ctx, int argc, char* argv[]) {
     kernel::serial::write("\n");
 }
 
-void cmd_realpath(ShellContext& ctx, int argc, char* argv[]) {
+void realpath(ShellContext& ctx, int argc, char* argv[]) {
     char path[kMaxPath];
 
     if (argc < 2) {
@@ -3618,7 +3758,7 @@ void cmd_realpath(ShellContext& ctx, int argc, char* argv[]) {
     kernel::serial::write("\n");
 }
 
-void cmd_seq(ShellContext&, int argc, char* argv[]) {
+void seq(ShellContext&, int argc, char* argv[]) {
     uint32_t start = 1;
     uint32_t end = 0;
     uint32_t step = 1;
@@ -3664,7 +3804,7 @@ void cmd_seq(ShellContext&, int argc, char* argv[]) {
     }
 }
 
-void cmd_repeat(ShellContext&, int argc, char* argv[]) {
+void repeat(ShellContext&, int argc, char* argv[]) {
 
     if (argc < 3) {
         kernel::serial::write("repeat <n> <text...>\n");
@@ -3688,7 +3828,7 @@ void cmd_repeat(ShellContext&, int argc, char* argv[]) {
     }
 }
 
-void cmd_catb(ShellContext& ctx, int argc, char* argv[]) {
+void catb(ShellContext& ctx, int argc, char* argv[]) {
 
     if (kernel::fs::g_fs == nullptr) {
         kernel::serial::write("fs unavailable\n");
@@ -3732,7 +3872,7 @@ void cmd_catb(ShellContext& ctx, int argc, char* argv[]) {
     kernel::fs::g_fs->close(fd);
 }
 
-void cmd_countdir(ShellContext& ctx, int argc, char* argv[]) {
+void countdir(ShellContext& ctx, int argc, char* argv[]) {
 
     if (kernel::fs::g_fs == nullptr) {
         kernel::serial::write("fs unavailable\n");
@@ -3762,7 +3902,7 @@ void cmd_countdir(ShellContext& ctx, int argc, char* argv[]) {
     kernel::serial::write("\n");
 }
 
-void cmd_touchmany(ShellContext& ctx, int argc, char* argv[]) {
+void touchmany(ShellContext& ctx, int argc, char* argv[]) {
 
     if (kernel::fs::g_fs == nullptr) {
         kernel::serial::write("fs unavailable\n");
@@ -3796,7 +3936,7 @@ void cmd_touchmany(ShellContext& ctx, int argc, char* argv[]) {
     }
 }
 
-void cmd_rmmany(ShellContext& ctx, int argc, char* argv[]) {
+void rmmany(ShellContext& ctx, int argc, char* argv[]) {
 
     if (kernel::fs::g_fs == nullptr) {
         kernel::serial::write("fs unavailable\n");

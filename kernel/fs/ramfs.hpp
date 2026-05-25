@@ -32,9 +32,9 @@ public:
     int read(int fd, void* buf, uint32_t count) override;
     int write(int fd, const void* buf, uint32_t count) override;
     int close(int fd) override;
-    int mkdir(const char* path) override;
+    int md(const char* path) override;
     int readdir(const char* path, DirEntry* entries, uint32_t max_entries) override;
-    int rmdir(const char* path) override;
+    int rd(const char* path) override;
     int unlink(const char* path) override;
 };
 

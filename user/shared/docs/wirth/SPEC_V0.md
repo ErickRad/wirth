@@ -19,7 +19,7 @@
 ## Arquitetura (marco inicial)
 - Bootstrap: i686 (Multiboot2) como base atual.
 - Evolução alvo: x86_64 em UEFI para mídia live moderna e melhor compatibilidade com PCs atuais.
-- Modo de execução atual: múltiplos processos de kernel com uma thread inicial por processo.
+- Modo de execução atual: múltiplos processos de kernel com uma thread inicial por processohi.
 - Tratamento de erro atual: halt em loop com mensagem de diagnóstico.
 - Interrupções: IDT com 256 entradas e handler genérico para validação de trap.
 - IRQ0 (timer): contador de ticks do kernel atualizado por interrupção.
@@ -38,7 +38,7 @@
 7. `sys_getpid()`
 8. `sys_gettid()`
 9. `sys_proc_count()`
-10. `sys_mkdir(path)`
+10. `sys_md(path)`
 11. `sys_getuid()`
 12. `sys_getgid()`
 
@@ -48,7 +48,7 @@
 - `sys_sleep` integrada ao estado de task (sleep/wakeup pelo scheduler).
 - `sys_open`, `sys_read` e `sys_close` implementadas para VFS/ramfs.
 - `sys_getpid`, `sys_gettid` e `sys_proc_count` implementadas para introspecção de execução.
-- `sys_mkdir` implementada para criação de diretórios no ramfs.
+- `sys_md` implementada para criação de diretórios no ramfs.
 - `sys_getuid` e `sys_getgid` implementadas (credenciais iniciais de root).
 
 ## Modelo de memória (planejado)

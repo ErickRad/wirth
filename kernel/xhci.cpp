@@ -342,31 +342,30 @@ static Trb next_event() {
 
 static bool wait_for_event(uint32_t type, uint64_t ptr, Trb* out_event, uint8_t* completion) {
     (void)type;
-    // Wait for completion entry populated by `handle_irq`
+    uint64_t spins = 0;
+
     for (;;) {
-        // scan completions
         for (int i = 0; i < 128; ++i) {
-            // simple lookup
-            // use volatile to avoid reordering
             volatile uint64_t p = g_completions[i].ptr;
+
             if (p == ptr) {
                 uint8_t code = g_completions[i].code;
                 if (out_event) *out_event = g_completions[i].ev;
                 if (completion) *completion = code;
 
-                // clear entry
                 g_completions[i].ptr = 0;
                 g_completions[i].code = 0;
                 return code == 1u;
             }
         }
 
-        // sleep to yield
-#ifdef __x86_64__
-        kernel::task::scheduler::sleep_current(1, kernel::arch::x86_64::interrupts::ticks());
-#else
-        kernel::task::scheduler::sleep_current(1, kernel::arch::x86::interrupts::ticks());
-#endif
+        kernel::xhci::handle_irq();
+        cpu_pause();
+
+        if (++spins >= 50000000u) {
+            kernel::serial::write("[xhci]: wait timeout\n");
+            return false;
+        }
     }
 }
 
@@ -1120,6 +1119,8 @@ void start_poll_task() {
 }
 
 bool wait_for_completion(uint64_t ptr, uint8_t* completion) {
+    uint64_t spins = 0;
+
     for (;;) {
         for (int i = 0; i < 128; ++i) {
             volatile uint64_t p = g_completions[i].ptr;
@@ -1133,11 +1134,13 @@ bool wait_for_completion(uint64_t ptr, uint8_t* completion) {
             }
         }
 
-#ifdef __x86_64__
-        kernel::task::scheduler::sleep_current(1, kernel::arch::x86_64::interrupts::ticks());
-#else
-        kernel::task::scheduler::sleep_current(1, kernel::arch::x86::interrupts::ticks());
-#endif
+        handle_irq();
+        cpu_pause();
+
+        if (++spins >= 50000000u) {
+            kernel::serial::write("[xhci]: wait timeout\n");
+            return false;
+        }
     }
 
     return false;

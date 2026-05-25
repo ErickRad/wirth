@@ -43,9 +43,9 @@ public:
     virtual int read(int fd, void* buf, uint32_t count) = 0;
     virtual int write(int fd, const void* buf, uint32_t count) = 0;
     virtual int close(int fd) = 0;
-    virtual int mkdir(const char* path) = 0;
+    virtual int md(const char* path) = 0;
     virtual int readdir(const char* path, DirEntry* entries, uint32_t max_entries) = 0;
-    virtual int rmdir(const char* path) = 0;
+    virtual int rd(const char* path) = 0;
     virtual int unlink(const char* path) = 0;
 };
 
